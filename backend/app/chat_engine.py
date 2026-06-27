@@ -1,6 +1,5 @@
 import os
 import json
-import numpy as np
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
 from google import genai
