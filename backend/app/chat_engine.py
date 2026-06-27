@@ -5,7 +5,13 @@ from sentence_transformers import SentenceTransformer
 from google import genai
 from app.database import init_db, insert_chunk, search_chunks, save_document, get_document, clear_document
 
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+_embedding_model = None
+
+def get_embedding_model():
+    global _embedding_model
+    if _embedding_model is None:
+        _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+    return _embedding_model
 
 class ChatEngine:
     def __init__(self):
@@ -13,7 +19,7 @@ class ChatEngine:
         init_db()
 
     def _embed(self, text: str) -> list:
-        arr = embedding_model.encode(text, normalize_embeddings=True)
+        arr = get_embedding_model().encode(text, normalize_embeddings=True)
         return arr.tolist()
 
     def _chunk_text(self, text: str, chunk_size: int = 500) -> list:
