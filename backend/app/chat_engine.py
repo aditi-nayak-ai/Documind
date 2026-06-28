@@ -20,7 +20,7 @@ class ChatEngine:
 
     def _embed(self, text: str) -> list:
         response = self.client.models.embed_content(
-            model="models/text-embedding-004",
+            model="text-embedding-004",
             contents=text
         )
         return response.embeddings[0].values
