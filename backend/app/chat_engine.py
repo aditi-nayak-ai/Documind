@@ -42,7 +42,7 @@ class ChatEngine:
 
     def _generate(self, prompt: str) -> str:
         response = self.client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.0-flash",
             contents=prompt
         )
         return response.text
@@ -91,16 +91,4 @@ Facts:""")
         if not relevant_chunks:
             return "No relevant content found for this document."
         context = "\n\n".join(relevant_chunks)
-        prompt = f"""You are a helpful assistant. Answer the question based only on the context below.
-Be specific and concise.
-
-Context:
-{context}
-
-Question: {question}
-
-Answer:"""
-        return self._generate(prompt)
-
-    def get_document_info(self, filename: str) -> dict:
-        return get_document(filename)
+        prompt = f"""You
