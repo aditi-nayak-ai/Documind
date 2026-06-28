@@ -3,11 +3,13 @@ from sqlalchemy import create_engine, text
 
 _engine = None
 
+
 def get_engine():
     global _engine
     if _engine is None:
         _engine = create_engine(os.getenv("DATABASE_URL"))
     return _engine
+
 
 def init_db():
     with get_engine().connect() as conn:
@@ -16,7 +18,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS document_chunks (
                 id SERIAL PRIMARY KEY,
                 content TEXT NOT NULL,
-                embedding vector(384),
+                embedding vector(3072),
                 document_name TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -24,13 +26,14 @@ def init_db():
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS documents (
                 id SERIAL PRIMARY KEY,
-                name TEXT NOT NULL,
+                name TEXT UNIQUE NOT NULL,
                 summary TEXT,
                 facts TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
         conn.commit()
+
 
 def insert_chunk(content: str, embedding: list, document_name: str):
     vector_str = "[" + ",".join(map(str, embedding)) + "]"
@@ -43,6 +46,7 @@ def insert_chunk(content: str, embedding: list, document_name: str):
             {"content": content, "embedding": vector_str, "document_name": document_name}
         )
         conn.commit()
+
 
 def search_chunks(query_embedding: list, document_name: str, top_k: int = 3) -> list:
     vector_str = "[" + ",".join(map(str, query_embedding)) + "]"
@@ -58,17 +62,21 @@ def search_chunks(query_embedding: list, document_name: str, top_k: int = 3) -> 
         )
         return [row[0] for row in result.fetchall()]
 
+
 def save_document(name: str, summary: str, facts: str):
     with get_engine().connect() as conn:
         conn.execute(
             text("""
                 INSERT INTO documents (name, summary, facts)
                 VALUES (:name, :summary, :facts)
-                ON CONFLICT DO NOTHING
+                ON CONFLICT (name) DO UPDATE
+                SET summary = EXCLUDED.summary,
+                    facts = EXCLUDED.facts
             """),
             {"name": name, "summary": summary, "facts": facts}
         )
         conn.commit()
+
 
 def get_document(name: str) -> dict:
     with get_engine().connect() as conn:
@@ -79,6 +87,7 @@ def get_document(name: str) -> dict:
         if result:
             return {"name": result[0], "summary": result[1], "facts": result[2]}
         return None
+
 
 def clear_document(document_name: str):
     with get_engine().connect() as conn:
