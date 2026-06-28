@@ -2,8 +2,7 @@ import os
 import json
 from pypdf import PdfReader
 from google import genai
-from app.database import init_db, insert_chunk, search_chunks, save_document, get_document, clear_document
-
+from app.database import insert_chunk, search_chunks, save_document, get_document, clear_document
 
 _client = None
 
