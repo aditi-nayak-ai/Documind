@@ -1,10 +1,20 @@
 import io
+import json
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from app.chat_engine import ChatEngine
+from app.database import init_db
 
-app = FastAPI(title="DocuMind API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="DocuMind API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -15,17 +25,21 @@ app.add_middleware(
 
 chat = ChatEngine()
 
+
 class QueryRequest(BaseModel):
     question: str
     filename: str
+
 
 @app.get("/")
 def root():
     return {"message": "DocuMind API is running."}
 
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
 
 @app.post("/ingest")
 async def ingest_pdf(file: UploadFile = File(...)):
@@ -41,16 +55,17 @@ async def ingest_pdf(file: UploadFile = File(...)):
         "chunks": result["chunks"]
     }
 
+
 @app.post("/query")
 def query(request: QueryRequest):
     answer = chat.ask(request.question, request.filename)
     return {"answer": answer}
 
+
 @app.get("/document/{filename}")
-def get_document(filename: str):
+def get_document_route(filename: str):
     doc = chat.get_document_info(filename)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
-    import json
     doc["facts"] = json.loads(doc["facts"])
     return doc
