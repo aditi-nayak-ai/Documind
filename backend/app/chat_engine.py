@@ -1,29 +1,30 @@
 import os
 import json
 from pypdf import PdfReader
-from sentence_transformers import SentenceTransformer
 from google import genai
 from app.database import init_db, insert_chunk, search_chunks, save_document, get_document, clear_document
 
-_embedding_model = None
 
-def get_embedding_model():
-    global _embedding_model
-    if _embedding_model is None:
-        _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-    return _embedding_model
+_client = None
+
+
+def get_client():
+    global _client
+    if _client is None:
+        _client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+    return _client
+
 
 class ChatEngine:
     def __init__(self):
-        self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-        init_db()
+        self.client = get_client()
 
     def _embed(self, text: str) -> list:
-    response = self.client.models.embed_content(
-        model="models/text-embedding-004",
-        contents=text
-    )
-    return response.embeddings[0].values
+        response = self.client.models.embed_content(
+            model="models/text-embedding-004",
+            contents=text
+        )
+        return response.embeddings[0].values
 
     def _chunk_text(self, text: str, chunk_size: int = 500) -> list:
         paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
@@ -60,16 +61,14 @@ class ChatEngine:
             embedding = self._embed(chunk)
             insert_chunk(chunk, embedding, filename)
 
-        summary = self._generate(f"""
-Summarize this document in 3-4 sentences. Be concise and clear.
+        summary = self._generate(f"""Summarize this document in 3-4 sentences. Be concise and clear.
 
 Document:
 {full_text[:3000]}
 
 Summary:""")
 
-        facts_raw = self._generate(f"""
-Extract key facts from this document. Return a JSON array of strings.
+        facts_raw = self._generate(f"""Extract key facts from this document. Return a JSON array of strings.
 Each string is one key fact, date, name, or important number.
 Return ONLY the JSON array, nothing else.
 
