@@ -60,21 +60,17 @@ class ChatEngine:
             embedding = self._embed(chunk)
             insert_chunk(chunk, embedding, filename)
 
-        summary = self._generate(f"""Summarize this document in 3-4 sentences. Be concise and clear.
+        summary = self._generate(
+            "Summarize this document in 3-4 sentences. Be concise and clear.\n\n"
+            "Document:\n" + full_text[:3000] + "\n\nSummary:"
+        )
 
-Document:
-{full_text[:3000]}
-
-Summary:""")
-
-        facts_raw = self._generate(f"""Extract key facts from this document. Return a JSON array of strings.
-Each string is one key fact, date, name, or important number.
-Return ONLY the JSON array, nothing else.
-
-Document:
-{full_text[:3000]}
-
-Facts:""")
+        facts_raw = self._generate(
+            "Extract key facts from this document. Return a JSON array of strings.\n"
+            "Each string is one key fact, date, name, or important number.\n"
+            "Return ONLY the JSON array, nothing else.\n\n"
+            "Document:\n" + full_text[:3000] + "\n\nFacts:"
+        )
 
         try:
             facts_clean = facts_raw.strip().replace("```json", "").replace("```", "").strip()
@@ -91,4 +87,13 @@ Facts:""")
         if not relevant_chunks:
             return "No relevant content found for this document."
         context = "\n\n".join(relevant_chunks)
-        prompt = f"""You
+        prompt = (
+            "You are a helpful assistant. Answer the question based only on the context below.\n"
+            "Be specific and concise.\n\n"
+            "Context:\n" + context + "\n\n"
+            "Question: " + question + "\n\nAnswer:"
+        )
+        return self._generate(prompt)
+
+    def get_document_info(self, filename: str) -> dict:
+        return get_document(filename)
