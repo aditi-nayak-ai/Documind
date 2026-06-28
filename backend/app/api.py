@@ -41,6 +41,12 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/models")
+def list_models():
+    models = [m.name for m in chat.client.models.list()]
+    return {"models": models}
+
+
 @app.post("/ingest")
 async def ingest_pdf(file: UploadFile = File(...)):
     if not file.filename.endswith(".pdf"):
