@@ -19,8 +19,11 @@ class ChatEngine:
         init_db()
 
     def _embed(self, text: str) -> list:
-        arr = get_embedding_model().encode(text, normalize_embeddings=True)
-        return arr.tolist()
+    response = self.client.models.embed_content(
+        model="models/text-embedding-004",
+        contents=text
+    )
+    return response.embeddings[0].values
 
     def _chunk_text(self, text: str, chunk_size: int = 500) -> list:
         paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
