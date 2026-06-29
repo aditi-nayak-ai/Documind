@@ -83,10 +83,13 @@ export default function SummaryPanel({ summary, filename }) {
         </div>
       )}
  
-      <div style={s.section}>
-        <p style={s.label}>Summary</p>
-        <p style={s.body}>{summary}</p>
-      </div>
+      {!quota && (
+        <div style={s.section}>
+          <p style={s.label}>Summary</p>
+          <p style={s.body}>{summary}</p>
+        </div>
+      )}
     </>
   );
 }
+ 
