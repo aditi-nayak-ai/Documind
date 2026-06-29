@@ -2,10 +2,10 @@ import os
 import json
 from pypdf import PdfReader
 from google import genai
+from google.genai import errors as genai_errors
 from app.database import insert_chunk, search_chunks, save_document, get_document, clear_document
 
 _client = None
-
 
 def get_client():
     global _client
@@ -15,7 +15,6 @@ def get_client():
             http_options={"api_version": "v1"}
         )
     return _client
-
 
 class ChatEngine:
     def __init__(self):
@@ -44,11 +43,16 @@ class ChatEngine:
         return chunks
 
     def _generate(self, prompt: str) -> str:
-        response = self.client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt
-        )
-        return response.text
+        try:
+            response = self.client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt
+            )
+            return response.text
+        except genai_errors.ClientError as e:
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                raise RuntimeError("QUOTA_EXCEEDED")
+            raise
 
     def load_pdf(self, file, filename: str) -> dict:
         reader = PdfReader(file, strict=False)
@@ -58,26 +62,36 @@ class ChatEngine:
 
         chunks = self._chunk_text(full_text)
         clear_document(filename)
-
         for chunk in chunks:
             embedding = self._embed(chunk)
             insert_chunk(chunk, embedding, filename)
 
-        summary = self._generate(
-            "Summarize this document in 3-4 sentences. Be concise and clear.\n\n"
-            "Document:\n" + full_text[:3000] + "\n\nSummary:"
-        )
-
-        facts_raw = self._generate(
-            "Extract key facts from this document. Return a JSON array of strings.\n"
-            "Each string is one key fact, date, name, or important number.\n"
-            "Return ONLY the JSON array, nothing else.\n\n"
-            "Document:\n" + full_text[:3000] + "\n\nFacts:"
-        )
+        # Embeddings are saved. Generation failures below are non-fatal.
+        try:
+            summary = self._generate(
+                "Summarize this document in 3-4 sentences. Be concise and clear.\n\n"
+                "Document:\n" + full_text[:3000] + "\n\nSummary:"
+            )
+        except RuntimeError as e:
+            if "QUOTA_EXCEEDED" in str(e):
+                summary = "Summary unavailable — Gemini quota limit reached. Your document has been indexed and chat will work once quota resets."
+            else:
+                raise
 
         try:
+            facts_raw = self._generate(
+                "Extract key facts from this document. Return a JSON array of strings.\n"
+                "Each string is one key fact, date, name, or important number.\n"
+                "Return ONLY the JSON array, nothing else.\n\n"
+                "Document:\n" + full_text[:3000] + "\n\nFacts:"
+            )
             facts_clean = facts_raw.strip().replace("```json", "").replace("```", "").strip()
             facts = json.loads(facts_clean)
+        except RuntimeError as e:
+            if "QUOTA_EXCEEDED" in str(e):
+                facts = ["Key facts unavailable — Gemini quota limit reached."]
+            else:
+                raise
         except Exception:
             facts = [facts_raw]
 
