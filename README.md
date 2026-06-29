@@ -1,52 +1,133 @@
-# DocuMind — AI Document Intelligence
+# DocuMind
 
-Upload any PDF and instantly get a summary, key facts, and a chat interface to ask questions about your document.
+A full-stack RAG application that lets you upload any PDF, get an instant AI-generated summary and key facts, and chat with the document using natural language.
 
-## Tech Stack
+Live demo: [documind-murex.vercel.app](https://documind-murex.vercel.app)
+
+---
+
+## How it works
+
+```
+PDF Upload
+  → Text extraction (pypdf)
+  → Paragraph chunking (500 char windows)
+  → Embedding each chunk (gemini-embedding-001, 3072 dimensions)
+  → Stored in pgvector (Neon PostgreSQL)
+
+User Question
+  → Embed question (gemini-embedding-001)
+  → Cosine similarity search → top 3 chunks retrieved
+  → Chunks + question sent to gemini-2.0-flash
+  → Answer returned to chat UI
+```
+
+---
+
+## Tech stack
 
 | Layer | Technology |
-|-------|-----------|
+|---|---|
 | Frontend | React 18, Vite, Tailwind CSS |
 | Backend | FastAPI, Python 3.11 |
-| Vector DB | PostgreSQL + pgvector |
-| Embeddings | Sentence Transformers (all-MiniLM-L6-v2) |
-| LLM | Google Gemini 1.5 Flash |
+| Embeddings | Gemini Embedding API (`gemini-embedding-001`, 3072-dim) |
+| LLM | Google Gemini (`gemini-2.0-flash`) |
+| Vector store | PostgreSQL + pgvector (Neon) |
 | Deployment | Render (backend), Vercel (frontend) |
 | CI/CD | GitHub Actions |
 
-## Features
+---
 
-- PDF upload with drag and drop
-- Automatic summarization
-- Key fact extraction
-- Chat interface with RAG-based question answering
-- Persistent vector storage with pgvector
+## Project structure
 
-## Architecture
+```
+Documind/
+├── backend/
+│   ├── app/
+│   │   ├── api.py          # FastAPI routes: /ingest, /query
+│   │   ├── chat_engine.py  # PDF parsing, chunking, embedding, RAG
+│   │   └── database.py     # SQLAlchemy engine, pgvector queries
+│   └── requirements.txt
+└── frontend/
+    ├── src/
+    │   ├── App.jsx
+    │   └── components/
+    │       ├── UploadZone.jsx
+    │       ├── SummaryPanel.jsx
+    │       ├── FactsPanel.jsx
+    │       └── ChatWindow.jsx
+    └── tailwind.config.js
+```
 
-PDF → Text Extraction → Chunking → Sentence Transformer Embeddings → pgvector storage
-Question → Embed → pgvector similarity search → Top 3 chunks → Gemini generation → Answer
+---
 
-## Setup
+## Local setup
+
+### Prerequisites
+- Python 3.11+
+- Node.js 18+
+- PostgreSQL instance with pgvector extension enabled (or a Neon free-tier database)
+- Google AI Studio API key
 
 ### Backend
+
 ```bash
 cd backend
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn app.api:app --reload
 ```
 
 ### Frontend
+
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-### Environment Variables
-Backend (Render):
-- `DATABASE_URL` — PostgreSQL connection string
-- `GEMINI_API_KEY` — Google AI Studio key
+### Environment variables
 
-Frontend (Vercel):
-- `VITE_BACKEND_URL` — Render backend URL
+Backend — set in Render dashboard or a local `.env` file (never commit this):
+
+```
+DATABASE_URL=postgresql://...
+GEMINI_API_KEY=...
+```
+
+Frontend — set in Vercel dashboard or a local `.env.local` file:
+
+```
+VITE_BACKEND_URL=https://your-render-service.onrender.com
+```
+
+---
+
+## API endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/ingest` | Upload a PDF. Returns summary, facts, chunk count. |
+| POST | `/query` | Ask a question. Requires `question` and `filename` in body. |
+
+### Example
+
+```bash
+# Upload
+curl -X POST https://your-backend.onrender.com/ingest \
+  -F "file=@document.pdf"
+
+# Query
+curl -X POST https://your-backend.onrender.com/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What is the main argument?", "filename": "document.pdf"}'
+```
+
+---
+
+## Known limitations
+
+- Gemini free tier enforces a daily request quota. Summary and fact extraction will return a fallback message when the quota is exhausted; chunk indexing and chat remain functional.
+- Render free tier spins down after 15 minutes of inactivity. First request after a cold start takes 30–60 seconds.
+- PDF text extraction requires selectable text. Scanned image-only PDFs will produce empty or partial results.
