@@ -9,20 +9,69 @@
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #0f172a;
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  background: #0d0f1a;
   color: #e2e8f0;
+  -webkit-font-smoothing: antialiased;
 }
 
-::-webkit-scrollbar {
-  width: 6px;
+/* Scrollbar */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: #12151f; }
+::-webkit-scrollbar-thumb { background: #2d2f45; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #7c3aed; }
+
+/* Animated gradient border for upload zone */
+@keyframes border-rotate {
+  0%   { --angle: 0deg; }
+  100% { --angle: 360deg; }
 }
 
-::-webkit-scrollbar-track {
-  background: #1e293b;
+@property --angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
 }
 
-::-webkit-scrollbar-thumb {
-  background: #334155;
-  border-radius: 3px;
+.upload-glow {
+  position: relative;
 }
+
+.upload-glow::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  background: conic-gradient(from var(--angle), transparent 70%, #7c3aed, #a78bfa, transparent);
+  animation: border-rotate 4s linear infinite;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  z-index: 0;
+}
+
+.upload-glow:hover::before,
+.upload-glow.dragging::before {
+  opacity: 1;
+}
+
+.upload-glow > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Glass card base */
+.glass-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  backdrop-filter: blur(8px);
+}
+
+/* Typing dots animation */
+@keyframes typing-dot {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+.typing-dot:nth-child(1) { animation: typing-dot 1.2s ease-in-out infinite 0ms; }
+.typing-dot:nth-child(2) { animation: typing-dot 1.2s ease-in-out infinite 200ms; }
+.typing-dot:nth-child(3) { animation: typing-dot 1.2s ease-in-out infinite 400ms; }
