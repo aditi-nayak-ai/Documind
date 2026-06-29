@@ -46,13 +46,23 @@ def list_models():
     models = [m.name for m in chat.client.models.list()]
     return {"models": models}
 
-
 @app.post("/ingest")
 async def ingest_pdf(file: UploadFile = File(...)):
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files accepted.")
     contents = await file.read()
-    result = chat.load_pdf(io.BytesIO(contents), file.filename)
+    try:
+        result = chat.load_pdf(io.BytesIO(contents), file.filename)
+    except RuntimeError as e:
+        if "QUOTA_EXCEEDED" in str(e):
+            raise HTTPException(
+                status_code=429,
+                detail="Gemini API quota exceeded. Please try again later or contact the administrator."
+            )
+        raise HTTPException(status_code=500, detail="Failed to process document.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
     return {
         "message": "PDF processed successfully.",
         "filename": file.filename,
@@ -60,7 +70,6 @@ async def ingest_pdf(file: UploadFile = File(...)):
         "facts": result["facts"],
         "chunks": result["chunks"]
     }
-
 
 @app.post("/query")
 def query(request: QueryRequest):
