@@ -7,7 +7,11 @@ _engine = None
 def get_engine():
     global _engine
     if _engine is None:
-        _engine = create_engine(os.getenv("DATABASE_URL"))
+        _engine = create_engine(
+            os.getenv("DATABASE_URL"),
+            pool_pre_ping=True,
+            pool_recycle=300,
+        )
     return _engine
 
 
