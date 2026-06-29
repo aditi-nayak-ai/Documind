@@ -1,18 +1,64 @@
+const isQuotaFact = (facts) =>
+  facts?.length === 1 && facts[0]?.toLowerCase().includes("quota");
+ 
 export default function FactsPanel({ facts }) {
+  const quota = isQuotaFact(facts);
+ 
+  const s = {
+    section: {
+      padding: "14px 16px",
+    },
+    label: {
+      fontSize: "10px",
+      fontWeight: 600,
+      color: "var(--text-muted)",
+      textTransform: "uppercase",
+      letterSpacing: "0.07em",
+      marginBottom: "10px",
+    },
+    list: {
+      display: "flex",
+      flexDirection: "column",
+      gap: "8px",
+    },
+    item: {
+      display: "flex",
+      alignItems: "flex-start",
+      gap: "9px",
+      fontSize: "13px",
+      color: "var(--text-secondary)",
+      lineHeight: 1.6,
+    },
+    dot: {
+      width: "5px",
+      height: "5px",
+      borderRadius: "50%",
+      background: "var(--accent)",
+      marginTop: "7px",
+      flexShrink: 0,
+    },
+    quotaText: {
+      fontSize: "13px",
+      color: "var(--text-muted)",
+      fontStyle: "italic",
+    },
+  };
+ 
   return (
-    <div className="bg-slate-800 rounded-2xl p-6 border border-slate-700">
-      <div className="flex items-center gap-2 mb-4">
-        <span className="text-2xl">🔍</span>
-        <h2 className="text-white font-semibold text-lg">Key Facts</h2>
-      </div>
-      <ul className="space-y-2">
-        {facts.map((fact, i) => (
-          <li key={i} className="flex items-start gap-2">
-            <span className="text-brand-500 mt-1 text-xs">▸</span>
-            <span className="text-slate-300 text-sm leading-relaxed">{fact}</span>
-          </li>
-        ))}
-      </ul>
+    <div style={s.section}>
+      <p style={s.label}>Key facts</p>
+      {quota ? (
+        <p style={s.quotaText}>Unavailable — quota limit reached.</p>
+      ) : (
+        <ul style={s.list}>
+          {facts.map((fact, i) => (
+            <li key={i} style={s.item}>
+              <span style={s.dot} />
+              <span>{fact}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
