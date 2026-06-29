@@ -3,7 +3,7 @@ import axios from "axios";
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 
-export default function ChatWindow({ filename }) {
+export default function ChatWindow({ docId }) {
   const [messages, setMessages] = useState([
     {
       role: "assistant",
@@ -27,7 +27,7 @@ export default function ChatWindow({ filename }) {
     try {
       const res = await axios.post(`${BACKEND}/query`, {
         question,
-        filename,
+        doc_id: docId,
       });
       setMessages((prev) => [
         ...prev,
