@@ -1,77 +1,60 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-* {
+ 
+*, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
 }
-
+ 
+:root {
+  --bg:          #0d0f1a;
+  --bg-card:     #12151f;
+  --bg-hover:    #181c2a;
+  --border:      rgba(255, 255, 255, 0.07);
+  --border-mid:  rgba(255, 255, 255, 0.11);
+  --accent:      #7c3aed;
+  --accent-hover:#6d28d9;
+  --accent-light: rgba(124, 58, 237, 0.12);
+  --accent-border: rgba(124, 58, 237, 0.4);
+  --text-primary:   #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted:     #475569;
+  --warning-bg:     rgba(234, 179, 8, 0.08);
+  --warning-border: rgba(234, 179, 8, 0.25);
+  --warning-text:   #ca8a04;
+  --danger-bg:      rgba(239, 68, 68, 0.1);
+  --danger-text:    #f87171;
+  --success-bg:     rgba(34, 197, 94, 0.1);
+  --success-text:   #4ade80;
+  --radius-sm: 6px;
+  --radius:    10px;
+  --radius-lg: 14px;
+}
+ 
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
-  background: #0d0f1a;
-  color: #e2e8f0;
+  background: var(--bg);
+  color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
+  font-size: 14px;
+  line-height: 1.5;
 }
-
-/* Scrollbar */
-::-webkit-scrollbar { width: 5px; }
-::-webkit-scrollbar-track { background: #12151f; }
-::-webkit-scrollbar-thumb { background: #2d2f45; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #7c3aed; }
-
-/* Animated gradient border for upload zone */
-@keyframes border-rotate {
-  0%   { --angle: 0deg; }
-  100% { --angle: 360deg; }
-}
-
-@property --angle {
-  syntax: "<angle>";
-  initial-value: 0deg;
-  inherits: false;
-}
-
-.upload-glow {
-  position: relative;
-}
-
-.upload-glow::before {
-  content: "";
-  position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  background: conic-gradient(from var(--angle), transparent 70%, #7c3aed, #a78bfa, transparent);
-  animation: border-rotate 4s linear infinite;
-  opacity: 0;
-  transition: opacity 0.3s ease;
-  z-index: 0;
-}
-
-.upload-glow:hover::before,
-.upload-glow.dragging::before {
-  opacity: 1;
-}
-
-.upload-glow > * {
-  position: relative;
-  z-index: 1;
-}
-
-/* Glass card base */
-.glass-card {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  backdrop-filter: blur(8px);
-}
-
-/* Typing dots animation */
-@keyframes typing-dot {
+ 
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+ 
+@keyframes bounce-dot {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
-  30% { transform: translateY(-4px); opacity: 1; }
+  30%            { transform: translateY(-4px); opacity: 1; }
 }
-
-.typing-dot:nth-child(1) { animation: typing-dot 1.2s ease-in-out infinite 0ms; }
-.typing-dot:nth-child(2) { animation: typing-dot 1.2s ease-in-out infinite 200ms; }
-.typing-dot:nth-child(3) { animation: typing-dot 1.2s ease-in-out infinite 400ms; }
+ 
+.typing-dot:nth-child(1) { animation: bounce-dot 1.2s ease-in-out infinite 0ms; }
+.typing-dot:nth-child(2) { animation: bounce-dot 1.2s ease-in-out infinite 180ms; }
+.typing-dot:nth-child(3) { animation: bounce-dot 1.2s ease-in-out infinite 360ms; }
+ 
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
