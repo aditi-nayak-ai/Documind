@@ -30,7 +30,8 @@ def init_db():
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS documents (
                 id SERIAL PRIMARY KEY,
-                name TEXT UNIQUE NOT NULL,
+                doc_id TEXT UNIQUE NOT NULL,
+                filename TEXT NOT NULL,
                 summary TEXT,
                 facts TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -39,7 +40,7 @@ def init_db():
         conn.commit()
 
 
-def insert_chunk(content: str, embedding: list, document_name: str):
+def insert_chunk(content: str, embedding: list, doc_id: str):
     vector_str = "[" + ",".join(map(str, embedding)) + "]"
     with get_engine().connect() as conn:
         conn.execute(
@@ -47,12 +48,12 @@ def insert_chunk(content: str, embedding: list, document_name: str):
                 INSERT INTO document_chunks (content, embedding, document_name)
                 VALUES (:content, :embedding, :document_name)
             """),
-            {"content": content, "embedding": vector_str, "document_name": document_name}
+            {"content": content, "embedding": vector_str, "document_name": doc_id}
         )
         conn.commit()
 
 
-def search_chunks(query_embedding: list, document_name: str, top_k: int = 3) -> list:
+def search_chunks(query_embedding: list, doc_id: str, top_k: int = 3) -> list:
     vector_str = "[" + ",".join(map(str, query_embedding)) + "]"
     with get_engine().connect() as conn:
         result = conn.execute(
@@ -62,45 +63,45 @@ def search_chunks(query_embedding: list, document_name: str, top_k: int = 3) -> 
                 ORDER BY embedding <=> CAST(:embedding AS vector)
                 LIMIT :k
             """),
-            {"embedding": vector_str, "k": top_k, "document_name": document_name}
+            {"embedding": vector_str, "k": top_k, "document_name": doc_id}
         )
         return [row[0] for row in result.fetchall()]
 
 
-def save_document(name: str, summary: str, facts: str):
+def save_document(doc_id: str, filename: str, summary: str, facts: str):
     with get_engine().connect() as conn:
         conn.execute(
             text("""
-                INSERT INTO documents (name, summary, facts)
-                VALUES (:name, :summary, :facts)
-                ON CONFLICT (name) DO UPDATE
+                INSERT INTO documents (doc_id, filename, summary, facts)
+                VALUES (:doc_id, :filename, :summary, :facts)
+                ON CONFLICT (doc_id) DO UPDATE
                 SET summary = EXCLUDED.summary,
                     facts = EXCLUDED.facts
             """),
-            {"name": name, "summary": summary, "facts": facts}
+            {"doc_id": doc_id, "filename": filename, "summary": summary, "facts": facts}
         )
         conn.commit()
 
 
-def get_document(name: str) -> dict:
+def get_document(doc_id: str) -> dict:
     with get_engine().connect() as conn:
         result = conn.execute(
-            text("SELECT name, summary, facts FROM documents WHERE name = :name"),
-            {"name": name}
+            text("SELECT doc_id, filename, summary, facts FROM documents WHERE doc_id = :doc_id"),
+            {"doc_id": doc_id}
         ).fetchone()
         if result:
-            return {"name": result[0], "summary": result[1], "facts": result[2]}
+            return {"doc_id": result[0], "filename": result[1], "summary": result[2], "facts": result[3]}
         return None
 
 
-def clear_document(document_name: str):
+def clear_document(doc_id: str):
     with get_engine().connect() as conn:
         conn.execute(
             text("DELETE FROM document_chunks WHERE document_name = :document_name"),
-            {"document_name": document_name}
+            {"document_name": doc_id}
         )
         conn.execute(
-            text("DELETE FROM documents WHERE name = :name"),
-            {"name": document_name}
+            text("DELETE FROM documents WHERE doc_id = :doc_id"),
+            {"doc_id": doc_id}
         )
         conn.commit()
