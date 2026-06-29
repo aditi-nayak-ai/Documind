@@ -1,5 +1,6 @@
 import os
 import json
+import uuid
 from pypdf import PdfReader
 from google import genai
 from google.genai import errors as genai_errors
@@ -32,6 +33,16 @@ class ChatEngine:
         chunks = []
         current = ""
         for para in paragraphs:
+            if len(para) > chunk_size:
+                # paragraph alone exceeds chunk_size — flush what we have,
+                # then hard-split the paragraph itself instead of letting
+                # it through as one oversized chunk
+                if current:
+                    chunks.append(current.strip())
+                    current = ""
+                for i in range(0, len(para), chunk_size):
+                    chunks.append(para[i:i + chunk_size].strip())
+                continue
             if len(current) + len(para) <= chunk_size:
                 current += " " + para
             else:
@@ -55,16 +66,16 @@ class ChatEngine:
             raise
 
     def load_pdf(self, file, filename: str) -> dict:
+        doc_id = str(uuid.uuid4())
+
         reader = PdfReader(file, strict=False)
-        full_text = ""
-        for page in reader.pages:
-            full_text += page.extract_text() or ""
+        full_text = "".join(page.extract_text() or "" for page in reader.pages)
 
         chunks = self._chunk_text(full_text)
-        clear_document(filename)
+        clear_document(doc_id)
         for chunk in chunks:
             embedding = self._embed(chunk)
-            insert_chunk(chunk, embedding, filename)
+            insert_chunk(chunk, embedding, doc_id)
 
         # Embeddings are saved. Generation failures below are non-fatal.
         try:
@@ -95,12 +106,12 @@ class ChatEngine:
         except Exception:
             facts = [facts_raw]
 
-        save_document(filename, summary, json.dumps(facts))
-        return {"summary": summary, "facts": facts, "chunks": len(chunks)}
+        save_document(doc_id, filename, summary, json.dumps(facts))
+        return {"doc_id": doc_id, "filename": filename, "summary": summary, "facts": facts, "chunks": len(chunks)}
 
-    def ask(self, question: str, filename: str) -> str:
+    def ask(self, question: str, doc_id: str) -> str:
         query_embedding = self._embed(question)
-        relevant_chunks = search_chunks(query_embedding, filename, top_k=3)
+        relevant_chunks = search_chunks(query_embedding, doc_id, top_k=3)
         if not relevant_chunks:
             return "No relevant content found for this document."
         context = "\n\n".join(relevant_chunks)
@@ -112,5 +123,5 @@ class ChatEngine:
         )
         return self._generate(prompt)
 
-    def get_document_info(self, filename: str) -> dict:
-        return get_document(filename)
+    def get_document_info(self, doc_id: str) -> dict:
+        return get_document(doc_id)
