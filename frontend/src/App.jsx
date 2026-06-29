@@ -55,7 +55,7 @@ export default function App() {
             <FactsPanel facts={docData.facts} />
           </div>
           <div className="lg:col-span-2">
-            <ChatWindow filename={docData.filename} />
+            <ChatWindow docId={docData.doc_id} />
           </div>
         </div>
       </div>
