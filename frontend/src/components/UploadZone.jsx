@@ -18,11 +18,35 @@ export default function UploadZone({ onUploadSuccess }) {
     setLoading(true);
     const formData = new FormData();
     formData.append("file", file);
+
     try {
       const res = await axios.post(`${BACKEND}/ingest`, formData);
       onUploadSuccess(res.data);
     } catch (e) {
-      setError("Upload failed. Please try again.");
+      if (e.response) {
+        // Backend responded with a non-2xx status
+        const status = e.response.status;
+        const detail = e.response.data?.detail;
+
+        if (status === 429) {
+          setError(
+            detail ||
+            "Gemini API quota exhausted. Your document is indexed but summary and facts are unavailable. Try again after quota resets."
+          );
+        } else if (status === 400) {
+          setError(detail || "Invalid file. Only PDF files are accepted.");
+        } else if (status === 500) {
+          setError(detail || "Server error. Please try again.");
+        } else {
+          setError(detail || "Upload failed. Please try again.");
+        }
+      } else if (e.request) {
+        // Request was made but no response received — backend unreachable
+        setError("Cannot reach the server. Check that the backend is running.");
+      } else {
+        // Something else went wrong
+        setError("Unexpected error. Please try again.");
+      }
     } finally {
       setLoading(false);
     }
@@ -38,7 +62,6 @@ export default function UploadZone({ onUploadSuccess }) {
           Upload a PDF. Get instant summary, key facts, and chat with your document.
         </p>
       </div>
-
       <div
         className={`w-full max-w-xl border-2 border-dashed rounded-2xl p-12 text-center cursor-pointer transition-all duration-200 ${
           dragging
@@ -70,7 +93,6 @@ export default function UploadZone({ onUploadSuccess }) {
           </>
         )}
       </div>
-
       {error && (
         <p className="mt-4 text-red-400 text-sm">{error}</p>
       )}
