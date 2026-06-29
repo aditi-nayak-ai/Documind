@@ -26,9 +26,12 @@ app.add_middleware(
 chat = ChatEngine()
 
 
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
 class QueryRequest(BaseModel):
     question: str
-    filename: str
+    doc_id: str
 
 
 @app.get("/")
@@ -51,6 +54,11 @@ async def ingest_pdf(file: UploadFile = File(...)):
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files accepted.")
     contents = await file.read()
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Max size is {MAX_UPLOAD_BYTES // (1024*1024)} MB."
+        )
     try:
         result = chat.load_pdf(io.BytesIO(contents), file.filename)
     except RuntimeError as e:
@@ -65,7 +73,8 @@ async def ingest_pdf(file: UploadFile = File(...)):
 
     return {
         "message": "PDF processed successfully.",
-        "filename": file.filename,
+        "doc_id": result["doc_id"],
+        "filename": result["filename"],
         "summary": result["summary"],
         "facts": result["facts"],
         "chunks": result["chunks"]
@@ -73,13 +82,13 @@ async def ingest_pdf(file: UploadFile = File(...)):
 
 @app.post("/query")
 def query(request: QueryRequest):
-    answer = chat.ask(request.question, request.filename)
+    answer = chat.ask(request.question, request.doc_id)
     return {"answer": answer}
 
 
-@app.get("/document/{filename}")
-def get_document_route(filename: str):
-    doc = chat.get_document_info(filename)
+@app.get("/document/{doc_id}")
+def get_document_route(doc_id: str):
+    doc = chat.get_document_info(doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
     doc["facts"] = json.loads(doc["facts"])
