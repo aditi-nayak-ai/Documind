@@ -35,12 +35,16 @@ def init_db():
                 summary TEXT,
                 facts TEXT,
                 chunk_count INTEGER DEFAULT 0,
+                is_partial BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
-        # Migration-safe: add chunk_count if the table pre-dates this column.
+        # Migration-safe: add columns if the table pre-dates them.
         conn.execute(text("""
             ALTER TABLE documents ADD COLUMN IF NOT EXISTS chunk_count INTEGER DEFAULT 0
+        """))
+        conn.execute(text("""
+            ALTER TABLE documents ADD COLUMN IF NOT EXISTS is_partial BOOLEAN DEFAULT FALSE
         """))
         conn.commit()
 
@@ -73,19 +77,20 @@ def search_chunks(query_embedding: list, doc_id: str, top_k: int = 3) -> list:
         return [row[0] for row in result.fetchall()]
 
 
-def save_document(doc_id: str, filename: str, summary: str, facts: str, chunk_count: int = 0):
+def save_document(doc_id: str, filename: str, summary: str, facts: str, chunk_count: int = 0, is_partial: bool = False):
     with get_engine().connect() as conn:
         conn.execute(
             text("""
-                INSERT INTO documents (doc_id, filename, summary, facts, chunk_count)
-                VALUES (:doc_id, :filename, :summary, :facts, :chunk_count)
+                INSERT INTO documents (doc_id, filename, summary, facts, chunk_count, is_partial)
+                VALUES (:doc_id, :filename, :summary, :facts, :chunk_count, :is_partial)
                 ON CONFLICT (doc_id) DO UPDATE
                 SET summary = EXCLUDED.summary,
                     facts = EXCLUDED.facts,
-                    chunk_count = EXCLUDED.chunk_count
+                    chunk_count = EXCLUDED.chunk_count,
+                    is_partial = EXCLUDED.is_partial
             """),
             {"doc_id": doc_id, "filename": filename, "summary": summary,
-             "facts": facts, "chunk_count": chunk_count}
+             "facts": facts, "chunk_count": chunk_count, "is_partial": is_partial}
         )
         conn.commit()
 
@@ -112,7 +117,7 @@ def get_document_by_filename(filename: str) -> dict:
     with get_engine().connect() as conn:
         result = conn.execute(
             text("""
-                SELECT doc_id, filename, summary, facts, chunk_count
+                SELECT doc_id, filename, summary, facts, chunk_count, is_partial
                 FROM documents
                 WHERE filename = :filename
                 ORDER BY created_at DESC
@@ -122,7 +127,7 @@ def get_document_by_filename(filename: str) -> dict:
         ).fetchone()
         if result:
             return {"doc_id": result[0], "filename": result[1], "summary": result[2],
-                    "facts": result[3], "chunk_count": result[4]}
+                    "facts": result[3], "chunk_count": result[4], "partial": result[5]}
         return None
 
 
@@ -137,4 +142,3 @@ def clear_document(doc_id: str):
             {"doc_id": doc_id}
         )
         conn.commit()
-
