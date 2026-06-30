@@ -1,3 +1,4 @@
+
 import os
 import json
 import uuid
@@ -26,11 +27,16 @@ class ChatEngine:
         self.client = get_client()
  
     def _embed(self, text: str) -> list:
-        response = self.client.models.embed_content(
-            model="gemini-embedding-001",
-            contents=text
-        )
-        return response.embeddings[0].values
+        try:
+            response = self.client.models.embed_content(
+                model="gemini-embedding-001",
+                contents=text
+            )
+            return response.embeddings[0].values
+        except genai_errors.ClientError as e:
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                raise RuntimeError("QUOTA_EXCEEDED")
+            raise
  
     def _chunk_text(self, text: str, chunk_size: int = 500) -> list:
         paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
@@ -94,9 +100,38 @@ class ChatEngine:
  
         doc_id = str(uuid.uuid4())
         chunks = self._chunk_text(full_text)
-        for chunk in chunks:
-            embedding = self._embed(chunk)
-            insert_chunk(chunk, embedding, doc_id)
+ 
+        embedded_count = 0
+        try:
+            for chunk in chunks:
+                embedding = self._embed(chunk)
+                insert_chunk(chunk, embedding, doc_id)
+                embedded_count += 1
+        except RuntimeError as e:
+            if "QUOTA_EXCEEDED" in str(e):
+                if embedded_count == 0:
+                    # Nothing was embedded — fail the whole upload cleanly.
+                    raise RuntimeError("QUOTA_EXCEEDED") from e
+                # Partial success: keep what embedded, tell the truth about the rest.
+                # Document is searchable but incomplete — surfaced via the
+                # 'partial' flag rather than pretending it's fully indexed.
+                summary = (
+                    f"Document partially indexed ({embedded_count}/{len(chunks)} chunks) — "
+                    "Gemini embedding quota was reached mid-upload. Chat will only search "
+                    "the indexed portion until you re-upload."
+                )
+                facts = ["Key facts unavailable — quota limit reached during indexing."]
+                save_document(doc_id, filename, summary, json.dumps(facts), chunk_count=embedded_count)
+                return {
+                    "doc_id": doc_id,
+                    "filename": filename,
+                    "summary": summary,
+                    "facts": facts,
+                    "chunks": embedded_count,
+                    "reused": False,
+                    "partial": True,
+                }
+            raise
  
         # Embeddings are saved. Generation failures below are non-fatal.
         try:
