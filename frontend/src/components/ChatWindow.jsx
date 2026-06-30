@@ -1,15 +1,15 @@
 import { useState, useRef, useEffect } from "react";
 import axios from "axios";
- 
+
 const BACKEND = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
- 
+
 const SendIcon = () => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     <line x1="12" y1="19" x2="12" y2="5"/>
     <polyline points="5 12 12 5 19 12"/>
   </svg>
 );
- 
+
 export default function ChatWindow({ docId }) {
   const [messages, setMessages] = useState([
     { role: "assistant", text: "Your document is indexed. Ask me anything about it." },
@@ -18,11 +18,11 @@ export default function ChatWindow({ docId }) {
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef();
   const inputRef = useRef();
- 
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
- 
+
   const send = async () => {
     const question = input.trim();
     if (!question || loading) return;
@@ -32,16 +32,20 @@ export default function ChatWindow({ docId }) {
     try {
       const res = await axios.post(`${BACKEND}/query`, { question, doc_id: docId });
       setMessages((prev) => [...prev, { role: "assistant", text: res.data.answer }]);
-    } catch {
+    } catch (e) {
+      const detail = e.response?.data?.detail;
+      const msg = e.response?.status === 429
+        ? (detail || "Gemini quota reached. Please wait a minute and try again.")
+        : (detail || "Something went wrong. Please try again.");
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", text: "Something went wrong. Please try again." },
+        { role: "assistant", text: msg },
       ]);
     } finally {
       setLoading(false);
     }
   };
- 
+
   const s = {
     panel: {
       display: "flex",
@@ -166,7 +170,7 @@ export default function ChatWindow({ docId }) {
       transition: "background 0.15s",
     },
   };
- 
+
   return (
     <div style={s.panel}>
       <div style={s.header}>
@@ -174,7 +178,7 @@ export default function ChatWindow({ docId }) {
         <span style={s.headerTitle}>Chat with document</span>
         <span style={s.headerSub}>top-3 chunks · cosine similarity</span>
       </div>
- 
+
       <div style={s.messages}>
         {messages.map((msg, i) => (
           <div key={i} style={s.msgRow(msg.role)}>
@@ -184,7 +188,7 @@ export default function ChatWindow({ docId }) {
             <div style={s.bubble(msg.role)}>{msg.text}</div>
           </div>
         ))}
- 
+
         {loading && (
           <div style={s.msgRow("assistant")}>
             <div style={s.avatar("assistant")}>D</div>
@@ -197,7 +201,7 @@ export default function ChatWindow({ docId }) {
         )}
         <div ref={bottomRef} />
       </div>
- 
+
       <div style={s.inputArea}>
         <textarea
           ref={inputRef}
