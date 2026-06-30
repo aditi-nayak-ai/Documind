@@ -34,8 +34,13 @@ def init_db():
                 filename TEXT NOT NULL,
                 summary TEXT,
                 facts TEXT,
+                chunk_count INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+        """))
+        # Migration-safe: add chunk_count if the table pre-dates this column.
+        conn.execute(text("""
+            ALTER TABLE documents ADD COLUMN IF NOT EXISTS chunk_count INTEGER DEFAULT 0
         """))
         conn.commit()
 
@@ -68,17 +73,19 @@ def search_chunks(query_embedding: list, doc_id: str, top_k: int = 3) -> list:
         return [row[0] for row in result.fetchall()]
 
 
-def save_document(doc_id: str, filename: str, summary: str, facts: str):
+def save_document(doc_id: str, filename: str, summary: str, facts: str, chunk_count: int = 0):
     with get_engine().connect() as conn:
         conn.execute(
             text("""
-                INSERT INTO documents (doc_id, filename, summary, facts)
-                VALUES (:doc_id, :filename, :summary, :facts)
+                INSERT INTO documents (doc_id, filename, summary, facts, chunk_count)
+                VALUES (:doc_id, :filename, :summary, :facts, :chunk_count)
                 ON CONFLICT (doc_id) DO UPDATE
                 SET summary = EXCLUDED.summary,
-                    facts = EXCLUDED.facts
+                    facts = EXCLUDED.facts,
+                    chunk_count = EXCLUDED.chunk_count
             """),
-            {"doc_id": doc_id, "filename": filename, "summary": summary, "facts": facts}
+            {"doc_id": doc_id, "filename": filename, "summary": summary,
+             "facts": facts, "chunk_count": chunk_count}
         )
         conn.commit()
 
@@ -86,11 +93,36 @@ def save_document(doc_id: str, filename: str, summary: str, facts: str):
 def get_document(doc_id: str) -> dict:
     with get_engine().connect() as conn:
         result = conn.execute(
-            text("SELECT doc_id, filename, summary, facts FROM documents WHERE doc_id = :doc_id"),
+            text("SELECT doc_id, filename, summary, facts, chunk_count FROM documents WHERE doc_id = :doc_id"),
             {"doc_id": doc_id}
         ).fetchone()
         if result:
-            return {"doc_id": result[0], "filename": result[1], "summary": result[2], "facts": result[3]}
+            return {"doc_id": result[0], "filename": result[1], "summary": result[2],
+                    "facts": result[3], "chunk_count": result[4]}
+        return None
+
+
+def get_document_by_filename(filename: str) -> dict:
+    """
+    Look up the most recent document with this exact filename.
+    Used to detect duplicate uploads so we can skip re-embedding
+    and re-generating summary/facts, which is what actually burns
+    Gemini quota — not how often the app is opened.
+    """
+    with get_engine().connect() as conn:
+        result = conn.execute(
+            text("""
+                SELECT doc_id, filename, summary, facts, chunk_count
+                FROM documents
+                WHERE filename = :filename
+                ORDER BY created_at DESC
+                LIMIT 1
+            """),
+            {"filename": filename}
+        ).fetchone()
+        if result:
+            return {"doc_id": result[0], "filename": result[1], "summary": result[2],
+                    "facts": result[3], "chunk_count": result[4]}
         return None
 
 
@@ -105,3 +137,4 @@ def clear_document(doc_id: str):
             {"doc_id": doc_id}
         )
         conn.commit()
+
