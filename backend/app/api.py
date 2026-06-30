@@ -44,11 +44,6 @@ def health():
     return {"status": "ok"}
 
 
-# NOTE: the old /models endpoint was removed. It exposed the full list of
-# models available to this Gemini API key with no auth — unnecessary
-# reconnaissance surface for anyone who finds the URL.
-
-
 @app.post("/ingest")
 async def ingest_pdf(file: UploadFile = File(...)):
     if not file.filename.endswith(".pdf"):
@@ -62,7 +57,6 @@ async def ingest_pdf(file: UploadFile = File(...)):
     try:
         result = chat.load_pdf(io.BytesIO(contents), file.filename)
     except ValueError as e:
-        # Empty / scanned / image-only PDF — extraction produced near-nothing.
         raise HTTPException(status_code=422, detail=str(e))
     except RuntimeError as e:
         if "QUOTA_EXCEEDED" in str(e):
@@ -99,4 +93,3 @@ def get_document_route(doc_id: str):
         raise HTTPException(status_code=404, detail="Document not found.")
     doc["facts"] = json.loads(doc["facts"])
     return doc
-
