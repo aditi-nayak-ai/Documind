@@ -4,10 +4,13 @@ import uuid
 from pypdf import PdfReader
 from google import genai
 from google.genai import errors as genai_errors
-from app.database import insert_chunk, search_chunks, save_document, get_document, clear_document
-
+from app.database import insert_chunk, search_chunks, save_document, get_document, get_document_by_filename
+ 
 _client = None
-
+ 
+MIN_EXTRACTED_CHARS = 100
+ 
+ 
 def get_client():
     global _client
     if _client is None:
@@ -16,18 +19,19 @@ def get_client():
             http_options={"api_version": "v1"}
         )
     return _client
-
+ 
+ 
 class ChatEngine:
     def __init__(self):
         self.client = get_client()
-
+ 
     def _embed(self, text: str) -> list:
         response = self.client.models.embed_content(
             model="gemini-embedding-001",
             contents=text
         )
         return response.embeddings[0].values
-
+ 
     def _chunk_text(self, text: str, chunk_size: int = 500) -> list:
         paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
         chunks = []
@@ -52,7 +56,7 @@ class ChatEngine:
         if current:
             chunks.append(current.strip())
         return chunks
-
+ 
     def _generate(self, prompt: str) -> str:
         try:
             response = self.client.models.generate_content(
@@ -64,19 +68,36 @@ class ChatEngine:
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
                 raise RuntimeError("QUOTA_EXCEEDED")
             raise
-
-    def load_pdf(self, file, filename: str) -> dict:
-        doc_id = str(uuid.uuid4())
-
+ 
+    def load_pdf(self, file, filename: str, force_reingest: bool = False) -> dict:
+        # --- Dedup check: this is what actually saves quota, not session frequency ---
+        # Re-uploading the same filename re-embeds every chunk and re-runs both
+        # generation calls for no reason if we already have it indexed.
+        if not force_reingest:
+            existing = get_document_by_filename(filename)
+            if existing:
+                existing["reused"] = True
+                return existing
+ 
         reader = PdfReader(file, strict=False)
         full_text = "".join(page.extract_text() or "" for page in reader.pages)
-
+ 
+        # --- Empty/scanned PDF guard ---
+        # pypdf returns "" silently for image-only or scanned PDFs. Without this
+        # check the pipeline indexes near-nothing and reports 200 OK, and chat
+        # later returns garbage with no indication of why.
+        if len(full_text.strip()) < MIN_EXTRACTED_CHARS:
+            raise ValueError(
+                "Could not extract readable text from this PDF. "
+                "It may be a scanned or image-only document — try a text-based PDF instead."
+            )
+ 
+        doc_id = str(uuid.uuid4())
         chunks = self._chunk_text(full_text)
-        clear_document(doc_id)
         for chunk in chunks:
             embedding = self._embed(chunk)
             insert_chunk(chunk, embedding, doc_id)
-
+ 
         # Embeddings are saved. Generation failures below are non-fatal.
         try:
             summary = self._generate(
@@ -88,7 +109,7 @@ class ChatEngine:
                 summary = "Summary unavailable — Gemini quota limit reached. Your document has been indexed and chat will work once quota resets."
             else:
                 raise
-
+ 
         try:
             facts_raw = self._generate(
                 "Extract key facts from this document. Return a JSON array of strings.\n"
@@ -105,10 +126,17 @@ class ChatEngine:
                 raise
         except Exception:
             facts = [facts_raw]
-
-        save_document(doc_id, filename, summary, json.dumps(facts))
-        return {"doc_id": doc_id, "filename": filename, "summary": summary, "facts": facts, "chunks": len(chunks)}
-
+ 
+        save_document(doc_id, filename, summary, json.dumps(facts), chunk_count=len(chunks))
+        return {
+            "doc_id": doc_id,
+            "filename": filename,
+            "summary": summary,
+            "facts": facts,
+            "chunks": len(chunks),
+            "reused": False,
+        }
+ 
     def ask(self, question: str, doc_id: str) -> str:
         query_embedding = self._embed(question)
         relevant_chunks = search_chunks(query_embedding, doc_id, top_k=3)
@@ -122,6 +150,6 @@ class ChatEngine:
             "Question: " + question + "\n\nAnswer:"
         )
         return self._generate(prompt)
-
+ 
     def get_document_info(self, doc_id: str) -> dict:
         return get_document(doc_id)
