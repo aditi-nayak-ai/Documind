@@ -44,10 +44,10 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/models")
-def list_models():
-    models = [m.name for m in chat.client.models.list()]
-    return {"models": models}
+# NOTE: the old /models endpoint was removed. It exposed the full list of
+# models available to this Gemini API key with no auth — unnecessary
+# reconnaissance surface for anyone who finds the URL.
+
 
 @app.post("/ingest")
 async def ingest_pdf(file: UploadFile = File(...)):
@@ -61,6 +61,9 @@ async def ingest_pdf(file: UploadFile = File(...)):
         )
     try:
         result = chat.load_pdf(io.BytesIO(contents), file.filename)
+    except ValueError as e:
+        # Empty / scanned / image-only PDF — extraction produced near-nothing.
+        raise HTTPException(status_code=422, detail=str(e))
     except RuntimeError as e:
         if "QUOTA_EXCEEDED" in str(e):
             raise HTTPException(
@@ -71,17 +74,20 @@ async def ingest_pdf(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
+    reused = result.get("reused", False)
     return {
-        "message": "PDF processed successfully.",
+        "message": "Document already indexed — reused existing data." if reused else "PDF processed successfully.",
         "doc_id": result["doc_id"],
         "filename": result["filename"],
         "summary": result["summary"],
-        "facts": result["facts"],
-        "chunks": result["chunks"]
+        "facts": result["facts"] if isinstance(result["facts"], list) else json.loads(result["facts"]),
+        "chunks": result.get("chunks", result.get("chunk_count", 0)),
+        "reused": reused,
     }
 
+
 @app.post("/query")
-def query(request: QueryRequest):
+async def query(request: QueryRequest):
     answer = chat.ask(request.question, request.doc_id)
     return {"answer": answer}
 
@@ -93,3 +99,4 @@ def get_document_route(doc_id: str):
         raise HTTPException(status_code=404, detail="Document not found.")
     doc["facts"] = json.loads(doc["facts"])
     return doc
+
