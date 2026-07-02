@@ -32,6 +32,7 @@ def init_db():
                 id SERIAL PRIMARY KEY,
                 doc_id TEXT UNIQUE NOT NULL,
                 filename TEXT NOT NULL,
+                content_hash TEXT,
                 summary TEXT,
                 facts TEXT,
                 chunk_count INTEGER DEFAULT 0,
@@ -45,6 +46,12 @@ def init_db():
         """))
         conn.execute(text("""
             ALTER TABLE documents ADD COLUMN IF NOT EXISTS is_partial BOOLEAN DEFAULT FALSE
+        """))
+        conn.execute(text("""
+            ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash TEXT
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents (content_hash)
         """))
         conn.commit()
 
@@ -77,20 +84,21 @@ def search_chunks(query_embedding: list, doc_id: str, top_k: int = 3) -> list:
         return [row[0] for row in result.fetchall()]
 
 
-def save_document(doc_id: str, filename: str, summary: str, facts: str, chunk_count: int = 0, is_partial: bool = False):
+def save_document(doc_id: str, filename: str, content_hash: str, summary: str, facts: str,
+                   chunk_count: int = 0, is_partial: bool = False):
     with get_engine().connect() as conn:
         conn.execute(
             text("""
-                INSERT INTO documents (doc_id, filename, summary, facts, chunk_count, is_partial)
-                VALUES (:doc_id, :filename, :summary, :facts, :chunk_count, :is_partial)
+                INSERT INTO documents (doc_id, filename, content_hash, summary, facts, chunk_count, is_partial)
+                VALUES (:doc_id, :filename, :content_hash, :summary, :facts, :chunk_count, :is_partial)
                 ON CONFLICT (doc_id) DO UPDATE
                 SET summary = EXCLUDED.summary,
                     facts = EXCLUDED.facts,
                     chunk_count = EXCLUDED.chunk_count,
                     is_partial = EXCLUDED.is_partial
             """),
-            {"doc_id": doc_id, "filename": filename, "summary": summary,
-             "facts": facts, "chunk_count": chunk_count, "is_partial": is_partial}
+            {"doc_id": doc_id, "filename": filename, "content_hash": content_hash,
+             "summary": summary, "facts": facts, "chunk_count": chunk_count, "is_partial": is_partial}
         )
         conn.commit()
 
@@ -98,32 +106,35 @@ def save_document(doc_id: str, filename: str, summary: str, facts: str, chunk_co
 def get_document(doc_id: str) -> dict:
     with get_engine().connect() as conn:
         result = conn.execute(
-            text("SELECT doc_id, filename, summary, facts, chunk_count FROM documents WHERE doc_id = :doc_id"),
+            text("""
+                SELECT doc_id, filename, summary, facts, chunk_count, is_partial, content_hash
+                FROM documents WHERE doc_id = :doc_id
+            """),
             {"doc_id": doc_id}
         ).fetchone()
         if result:
             return {"doc_id": result[0], "filename": result[1], "summary": result[2],
-                    "facts": result[3], "chunk_count": result[4]}
+                    "facts": result[3], "chunk_count": result[4], "is_partial": result[5],
+                    "content_hash": result[6]}
         return None
 
 
-def get_document_by_filename(filename: str) -> dict:
+def get_document_by_hash(content_hash: str) -> dict:
     """
-    Look up the most recent document with this exact filename.
-    Used to detect duplicate uploads so we can skip re-embedding
-    and re-generating summary/facts, which is what actually burns
-    Gemini quota — not how often the app is opened.
+    Look up the most recent document with this exact content hash.
+    Hash-based, not filename-based — editing a PDF and re-uploading it
+    under the same name will no longer silently reuse stale chunks.
     """
     with get_engine().connect() as conn:
         result = conn.execute(
             text("""
                 SELECT doc_id, filename, summary, facts, chunk_count, is_partial
                 FROM documents
-                WHERE filename = :filename
+                WHERE content_hash = :content_hash
                 ORDER BY created_at DESC
                 LIMIT 1
             """),
-            {"filename": filename}
+            {"content_hash": content_hash}
         ).fetchone()
         if result:
             return {"doc_id": result[0], "filename": result[1], "summary": result[2],
