@@ -53,6 +53,23 @@ def init_db():
         conn.execute(text("""
             CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents (content_hash)
         """))
+        # Every search_chunks() call filters WHERE document_name = :doc_id before
+        # sorting by vector distance. Without this, that filter is a sequential
+        # scan over the whole document_chunks table on every single query.
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_document_chunks_document_name
+            ON document_chunks (document_name)
+        """))
+        # No ANN index existed on embedding at all, so `ORDER BY embedding <=> ...`
+        # was doing an exact brute-force distance computation against every row
+        # in document_chunks on every query — fine at a few hundred chunks, and
+        # increasingly not fine as the table grows. HNSW trades a small amount
+        # of recall for large speedups at scale; cosine ops match the `<=>`
+        # operator already used in search_chunks().
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_document_chunks_embedding
+            ON document_chunks USING hnsw (embedding vector_cosine_ops)
+        """))
         conn.commit()
 
 
