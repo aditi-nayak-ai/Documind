@@ -30,16 +30,13 @@ export default function ChatWindow({ docId }) {
     setMessages((prev) => [...prev, { role: "user", text: question }]);
     setLoading(true);
     try {
-      const res = await axios.post(`${BACKEND}/query`, { question, doc_id: docId }, {
-        headers: { "x-api-key": import.meta.env.VITE_APP_API_KEY }
-      });
+      const res = await axios.post(`${BACKEND}/query`, { question, doc_id: docId });
       setMessages((prev) => [...prev, { role: "assistant", text: res.data.answer }]);
     } catch (e) {
       const status = e.response?.status;
       const detail = e.response?.data?.detail;
       let msg;
       if (status === 429) msg = detail || "Gemini quota reached. Please wait a minute and try again.";
-      else if (status === 403) msg = "Not authorized — check your API key configuration.";
       else msg = detail || "Something went wrong. Please try again.";
       setMessages((prev) => [
         ...prev,
