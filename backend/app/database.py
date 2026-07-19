@@ -60,17 +60,30 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_document_chunks_document_name
             ON document_chunks (document_name)
         """))
-        # No ANN index existed on embedding at all, so `ORDER BY embedding <=> ...`
-        # was doing an exact brute-force distance computation against every row
-        # in document_chunks on every query — fine at a few hundred chunks, and
-        # increasingly not fine as the table grows. HNSW trades a small amount
-        # of recall for large speedups at scale; cosine ops match the `<=>`
-        # operator already used in search_chunks().
-        conn.execute(text("""
-            CREATE INDEX IF NOT EXISTS idx_document_chunks_embedding
-            ON document_chunks USING hnsw (embedding vector_cosine_ops)
-        """))
         conn.commit()
+
+    # The ANN index on `embedding` is handled in its own connection/transaction,
+    # deliberately isolated from everything above. pgvector's plain `vector`
+    # type can only be HNSW-indexed up to 2,000 dimensions — Gemini's
+    # embeddings are 3,072-dim, so a direct index on `embedding` fails outright
+    # (this took the app down once already, since a failed statement here
+    # previously crashed startup). Casting to `halfvec`, which supports HNSW
+    # up to 4,000 dimensions, is pgvector's own documented workaround for
+    # exactly this case. If index creation fails for any reason (older
+    # pgvector version, future limit changes, etc.), we log it and continue —
+    # search still works via sequential scan, just slower as the table grows.
+    # A missing ANN index should never be a reason the whole API refuses to boot.
+    try:
+        with get_engine().connect() as conn:
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_document_chunks_embedding
+                ON document_chunks
+                USING hnsw ((embedding::halfvec(3072)) halfvec_cosine_ops)
+            """))
+            conn.commit()
+    except Exception as e:
+        print(f"WARN: could not create ANN index on document_chunks.embedding: {e}")
+        print("Vector search will still work but will use a full scan instead of an index.")
 
 
 def insert_chunk(content: str, embedding: list, doc_id: str):
@@ -93,7 +106,7 @@ def search_chunks(query_embedding: list, doc_id: str, top_k: int = 3) -> list:
             text("""
                 SELECT content FROM document_chunks
                 WHERE document_name = :document_name
-                ORDER BY embedding <=> CAST(:embedding AS vector)
+                ORDER BY embedding::halfvec(3072) <=> CAST(:embedding AS halfvec(3072))
                 LIMIT :k
             """),
             {"embedding": vector_str, "k": top_k, "document_name": doc_id}
