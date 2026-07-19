@@ -8,3 +8,4 @@ google-genai
 python-multipart
 pydantic-settings
 httpx
+slowapi
