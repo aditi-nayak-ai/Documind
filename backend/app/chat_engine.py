@@ -11,6 +11,8 @@ from app.database import insert_chunk, search_chunks, save_document, get_documen
 _client = None
 
 MIN_EXTRACTED_CHARS = 100
+EMBED_BATCH_SIZE = 20  # chunks per embed_content call; keeps request size modest
+                        # since each chunk is already capped at 500 chars
 
 
 def get_client():
@@ -70,6 +72,39 @@ class ChatEngine:
                     raise self._classify_quota_error(e)
                 raise
         return self._call_with_retry(call)
+
+    def _embed_batch(self, texts: list) -> list:
+        """Embed multiple chunks in one API call instead of one call per chunk.
+
+        The Gemini SDK is documented to accept a list of strings and return
+        one embedding per string, but there are unresolved reports of it
+        instead collapsing the list into a single embedding. Rather than
+        trust either behavior blindly, this checks that the response
+        actually has one embedding per input text before using it — if the
+        count doesn't match, it falls back to embedding the batch one at a
+        time so chunks and vectors never get silently mismatched.
+        """
+        def call():
+            try:
+                response = self.client.models.embed_content(
+                    model="gemini-embedding-001",
+                    contents=texts
+                )
+                return response.embeddings
+            except genai_errors.ClientError as e:
+                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                    raise self._classify_quota_error(e)
+                raise
+        embeddings = self._call_with_retry(call)
+
+        if not embeddings or len(embeddings) != len(texts):
+            print(
+                f"WARN: batch embed returned {len(embeddings) if embeddings else 0} "
+                f"embeddings for {len(texts)} inputs — falling back to per-chunk calls."
+            )
+            return [self._embed(t) for t in texts]
+
+        return [e.values for e in embeddings]
 
     def _chunk_text(self, text: str, chunk_size: int = 500) -> list:
         paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
@@ -131,11 +166,13 @@ class ChatEngine:
 
         embedded_count = 0
         try:
-            for chunk in chunks:
-                embedding = self._embed(chunk)
-                insert_chunk(chunk, embedding, doc_id)
-                embedded_count += 1
-        except QuotaError as e:
+            for batch_start in range(0, len(chunks), EMBED_BATCH_SIZE):
+                batch = chunks[batch_start:batch_start + EMBED_BATCH_SIZE]
+                embeddings = self._embed_batch(batch)
+                for chunk, embedding in zip(batch, embeddings):
+                    insert_chunk(chunk, embedding, doc_id)
+                    embedded_count += 1
+        except QuotaError:
             if embedded_count == 0:
                 raise
             summary = (
