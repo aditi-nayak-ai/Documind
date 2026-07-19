@@ -19,9 +19,7 @@ export default function UploadZone({ onUploadSuccess }) {
     const formData = new FormData();
     formData.append("file", file);
     try {
-      const res = await axios.post(`${BACKEND}/ingest`, formData, {
-        headers: { "x-api-key": import.meta.env.VITE_APP_API_KEY }
-      });
+      const res = await axios.post(`${BACKEND}/ingest`, formData);
       onUploadSuccess(res.data);
     } catch (e) {
       if (e.response) {
@@ -29,7 +27,6 @@ export default function UploadZone({ onUploadSuccess }) {
         if (status === 429) setError(data?.detail || "Gemini quota exhausted. Document is indexed — try again after quota resets.");
         else if (status === 413) setError("File too large. Maximum size is 10 MB.");
         else if (status === 400) setError(data?.detail || "Invalid file. Only PDF files are accepted.");
-        else if (status === 403) setError("Not authorized — check your API key configuration.");
         else setError(data?.detail || "Upload failed. Please try again.");
       } else if (e.request) {
         setError("Cannot reach the server. Check that the backend is running.");
