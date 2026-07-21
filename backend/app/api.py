@@ -65,17 +65,42 @@ def health():
     return {"status": "ok"}
 
 
+UPLOAD_READ_CHUNK_BYTES = 1024 * 1024  # 1 MB
+
+
 @app.post("/ingest")
 @limiter.limit("5/minute")
 async def ingest_pdf(request: Request, file: UploadFile = File(...)):
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files accepted.")
-    contents = await file.read()
-    if len(contents) > MAX_UPLOAD_BYTES:
+
+    # Fast path: reject up front if the client told the truth about size.
+    declared_size = request.headers.get("content-length")
+    if declared_size and int(declared_size) > MAX_UPLOAD_BYTES:
         raise HTTPException(
             status_code=413,
             detail=f"File too large. Max size is {MAX_UPLOAD_BYTES // (1024*1024)} MB."
         )
+
+    # Real enforcement: read in bounded chunks and abort the instant the
+    # cap is crossed, instead of calling file.read() with no limit and
+    # checking size only after the whole upload is already buffered in
+    # memory. Content-Length can be absent or wrong (chunked transfer
+    # encoding, a lying client), so this is the check that actually
+    # bounds memory use per request.
+    buffer = bytearray()
+    while True:
+        piece = await file.read(UPLOAD_READ_CHUNK_BYTES)
+        if not piece:
+            break
+        buffer.extend(piece)
+        if len(buffer) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Max size is {MAX_UPLOAD_BYTES // (1024*1024)} MB."
+            )
+    contents = bytes(buffer)
+
     try:
         result = chat.load_pdf(contents, file.filename)
     except ValueError as e:
@@ -104,6 +129,7 @@ async def ingest_pdf(request: Request, file: UploadFile = File(...)):
         "chunks": result.get("chunks", result.get("chunk_count", 0)),
         "reused": reused,
         "partial": partial,
+        "summary_truncated": result.get("summary_truncated", False),
     }
 
 
