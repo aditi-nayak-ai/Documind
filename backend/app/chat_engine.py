@@ -14,6 +14,16 @@ MIN_EXTRACTED_CHARS = 100
 EMBED_BATCH_SIZE = 20  # chunks per embed_content call; keeps request size modest
                         # since each chunk is already capped at 500 chars
 
+# Summary/facts are generated from a prefix of the document, not the whole
+# thing — gemini-2.0-flash's context window could fit far more, but keeping
+# this bounded controls latency/cost per upload. 15,000 chars covers most
+# short reports and several pages of a longer one, well past the old 3,000
+# char (~1 page) limit, which silently summarized only the introduction of
+# anything longer with no indication that had happened. When a document
+# exceeds this, load_pdf() now says so explicitly in the summary text and
+# in a `summary_truncated` flag, instead of staying quiet about it.
+SUMMARY_CONTEXT_CHARS = 15000
+
 
 def get_client():
     global _client
@@ -106,27 +116,59 @@ class ChatEngine:
 
         return [e.values for e in embeddings]
 
-    def _chunk_text(self, text: str, chunk_size: int = 500) -> list:
+    def _chunk_text(self, text: str, chunk_size: int = 500, overlap: int = 80) -> list:
+        """Split text into chunks for embedding.
+
+        Two things changed from the original version:
+          1. Long paragraphs are now split on word boundaries instead of a
+             blind `para[i:i+chunk_size]` slice, so words are never cut
+             in half.
+          2. A second pass prepends a small tail of each chunk onto the
+             next one (`overlap` chars). Without this, a fact sitting
+             right at a chunk boundary could end up split across two
+             chunks and not fully present in either — with fixed top_k=3
+             retrieval, that made it structurally unrecoverable, not just
+             harder to find.
+        """
         paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-        chunks = []
+        raw_chunks = []
         current = ""
+
+        def push_current():
+            if current:
+                raw_chunks.append(current.strip())
+
         for para in paragraphs:
             if len(para) > chunk_size:
-                if current:
-                    chunks.append(current.strip())
-                    current = ""
-                for i in range(0, len(para), chunk_size):
-                    chunks.append(para[i:i + chunk_size].strip())
+                push_current()
+                current = ""
+                words = para.split(" ")
+                piece = ""
+                for word in words:
+                    candidate = f"{piece} {word}".strip()
+                    if len(candidate) > chunk_size and piece:
+                        raw_chunks.append(piece.strip())
+                        piece = word
+                    else:
+                        piece = candidate
+                current = piece
                 continue
-            if len(current) + len(para) <= chunk_size:
-                current += " " + para
+            candidate = f"{current} {para}".strip()
+            if len(candidate) <= chunk_size:
+                current = candidate
             else:
-                if current:
-                    chunks.append(current.strip())
+                push_current()
                 current = para
-        if current:
-            chunks.append(current.strip())
-        return chunks
+        push_current()
+
+        if not overlap or len(raw_chunks) < 2:
+            return raw_chunks
+
+        overlapped = [raw_chunks[0]]
+        for i in range(1, len(raw_chunks)):
+            tail = raw_chunks[i - 1][-overlap:]
+            overlapped.append((tail + " " + raw_chunks[i]).strip())
+        return overlapped
 
     def _generate(self, prompt: str) -> str:
         def call():
@@ -193,21 +235,32 @@ class ChatEngine:
                 "partial": True,
             }
 
+        doc_truncated = len(full_text) > SUMMARY_CONTEXT_CHARS
+        text_for_summary = full_text[:SUMMARY_CONTEXT_CHARS]
+
         try:
             summary = self._generate(
                 "Summarize this document in 3-4 sentences. Be concise and clear.\n\n"
-                "Document:\n" + full_text[:3000] + "\n\nSummary:"
+                "Document:\n" + text_for_summary + "\n\nSummary:"
             )
+            if doc_truncated:
+                summary += (
+                    f" (Note: this summary and the facts below are based on the first "
+                    f"~{SUMMARY_CONTEXT_CHARS:,} characters of a longer document — chat "
+                    f"answers still search the full text via embeddings, so the two may "
+                    f"cover different parts of the document.)"
+                )
         except QuotaError as e:
             wait_note = "Please wait a minute and try again." if not e.is_daily else "Quota resets daily — try again later."
             summary = f"Summary unavailable — Gemini quota limit reached. {wait_note}"
 
+        facts_raw = None
         try:
             facts_raw = self._generate(
                 "Extract key facts from this document. Return a JSON array of strings.\n"
                 "Each string is one key fact, date, name, or important number.\n"
                 "Return ONLY the JSON array, nothing else.\n\n"
-                "Document:\n" + full_text[:3000] + "\n\nFacts:"
+                "Document:\n" + text_for_summary + "\n\nFacts:"
             )
             facts_clean = facts_raw.strip().replace("```json", "").replace("```", "").strip()
             facts = json.loads(facts_clean)
@@ -215,7 +268,14 @@ class ChatEngine:
             wait_note = "Please wait a minute and try again." if not e.is_daily else "Quota resets daily — try again later."
             facts = [f"Key facts unavailable — Gemini quota limit reached. {wait_note}"]
         except Exception:
-            facts = [facts_raw]
+            # facts_raw may be None here — e.g. _generate() itself raised
+            # before returning anything (a non-quota ClientError, timeout,
+            # etc.) — or it may hold text that just failed to parse as
+            # JSON. Handle both instead of assuming facts_raw was always
+            # successfully assigned before this branch runs.
+            facts = [facts_raw] if facts_raw is not None else [
+                "Key facts unavailable — an unexpected error occurred during extraction."
+            ]
 
         save_document(doc_id, filename, content_hash, summary, json.dumps(facts),
                       chunk_count=len(chunks), is_partial=False)
@@ -226,6 +286,7 @@ class ChatEngine:
             "facts": facts,
             "chunks": len(chunks),
             "reused": False,
+            "summary_truncated": doc_truncated,
         }
 
     def ask(self, question: str, doc_id: str) -> str:
