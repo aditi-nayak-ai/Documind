@@ -1,4 +1,6 @@
 import json
+import logging
+import traceback
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,6 +11,9 @@ from slowapi.errors import RateLimitExceeded
 from app.chat_engine import ChatEngine, QuotaError
 from app.database import init_db
 import os
+
+logger = logging.getLogger("documind")
+logging.basicConfig(level=logging.INFO)
 
 
 @asynccontextmanager
@@ -109,6 +114,10 @@ async def ingest_pdf(request: Request, file: UploadFile = File(...)):
         wait_note = "Please wait a minute and try again." if not e.is_daily else "Quota resets daily — please try again later."
         raise HTTPException(status_code=429, detail=f"Gemini API quota exceeded. {wait_note}")
     except Exception as e:
+        # Log the full traceback server-side so Render's logs show the real
+        # cause — previously only "500 Internal Server Error" showed up
+        # with nothing to debug from. The client still just gets str(e).
+        logger.error("Unexpected error in /ingest: %s\n%s", e, traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
     reused = result.get("reused", False)
@@ -141,7 +150,8 @@ async def query(request: Request, body: QueryRequest):
     except QuotaError as e:
         wait_note = "Please wait a minute and try again." if not e.is_daily else "Quota resets daily — please try again later."
         raise HTTPException(status_code=429, detail=f"Gemini API quota reached. {wait_note}")
-    except Exception:
+    except Exception as e:
+        logger.error("Unexpected error in /query: %s\n%s", e, traceback.format_exc())
         raise HTTPException(status_code=500, detail="Failed to answer the question.")
     return {"answer": answer}
 
