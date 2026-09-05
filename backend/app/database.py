@@ -1,4 +1,5 @@
 import os
+
 from sqlalchemy import create_engine, text
 
 _engine = None
@@ -81,7 +82,7 @@ def init_db():
                 USING hnsw ((embedding::halfvec(3072)) halfvec_cosine_ops)
             """))
             conn.commit()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 -- deliberate: a missing ANN index should degrade to a full scan, never block app startup, regardless of which pgvector/driver error caused it
         print(f"WARN: could not create ANN index on document_chunks.embedding: {e}")
         print("Vector search will still work but will use a full scan instead of an index.")
 
