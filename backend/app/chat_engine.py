@@ -1,12 +1,20 @@
-import os
+import hashlib
 import json
+import os
 import time
 import uuid
-import hashlib
-from pypdf import PdfReader
+
 from google import genai
 from google.genai import errors as genai_errors
-from app.database import insert_chunk, search_chunks, save_document, get_document, get_document_by_hash
+from pypdf import PdfReader
+
+from app.database import (
+    get_document,
+    get_document_by_hash,
+    insert_chunk,
+    save_document,
+    search_chunks,
+)
 
 _client = None
 
@@ -267,7 +275,7 @@ class ChatEngine:
         except QuotaError as e:
             wait_note = "Please wait a minute and try again." if not e.is_daily else "Quota resets daily — try again later."
             facts = [f"Key facts unavailable — Gemini quota limit reached. {wait_note}"]
-        except Exception:
+        except Exception:  # noqa: BLE001 -- deliberately broad: covers both a raised ClientError/timeout from _generate() and a JSONDecodeError from a malformed response, so fact extraction degrades gracefully either way
             # facts_raw may be None here — e.g. _generate() itself raised
             # before returning anything (a non-quota ClientError, timeout,
             # etc.) — or it may hold text that just failed to parse as
