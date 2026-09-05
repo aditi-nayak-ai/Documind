@@ -1,16 +1,18 @@
 import json
 import logging
+import os
 import traceback
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+
 from app.chat_engine import ChatEngine, QuotaError
 from app.database import init_db
-import os
 
 logger = logging.getLogger("documind")
 logging.basicConfig(level=logging.INFO)
@@ -75,7 +77,7 @@ UPLOAD_READ_CHUNK_BYTES = 1024 * 1024  # 1 MB
 
 @app.post("/ingest")
 @limiter.limit("5/minute")
-async def ingest_pdf(request: Request, file: UploadFile = File(...)):
+async def ingest_pdf(request: Request, file: UploadFile = File(...)):  # noqa: B008 -- File(...) as a default is FastAPI's documented dependency-injection pattern, not a mutable-default bug
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files accepted.")
 
@@ -113,12 +115,12 @@ async def ingest_pdf(request: Request, file: UploadFile = File(...)):
     except QuotaError as e:
         wait_note = "Please wait a minute and try again." if not e.is_daily else "Quota resets daily — please try again later."
         raise HTTPException(status_code=429, detail=f"Gemini API quota exceeded. {wait_note}")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 -- deliberate top-level boundary: any unexpected failure here still needs to become a clean 500 instead of an unhandled crash
         # Log the full traceback server-side so Render's logs show the real
         # cause — previously only "500 Internal Server Error" showed up
         # with nothing to debug from. The client still just gets str(e).
         logger.error("Unexpected error in /ingest: %s\n%s", e, traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {e!s}")
 
     reused = result.get("reused", False)
     partial = result.get("partial", False)
@@ -150,7 +152,7 @@ async def query(request: Request, body: QueryRequest):
     except QuotaError as e:
         wait_note = "Please wait a minute and try again." if not e.is_daily else "Quota resets daily — please try again later."
         raise HTTPException(status_code=429, detail=f"Gemini API quota reached. {wait_note}")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 -- same rationale as /ingest above: convert any unexpected failure into a clean 500 rather than letting it crash unhandled
         logger.error("Unexpected error in /query: %s\n%s", e, traceback.format_exc())
         raise HTTPException(status_code=500, detail="Failed to answer the question.")
     return {"answer": answer}
