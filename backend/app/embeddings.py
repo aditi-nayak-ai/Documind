@@ -1,6 +1,9 @@
 from google.genai import errors as genai_errors
 
 from app.gemini_client import call_with_retry, classify_quota_error, get_client
+from app.logging_config import setup_logging
+
+logger = setup_logging("documind")
 
 EMBED_BATCH_SIZE = 20  # chunks per embed_content call; keeps request size modest
                         # since each chunk is already capped at 500 chars
@@ -52,9 +55,9 @@ def embed_batch(texts: list) -> list:
     embeddings = call_with_retry(call)
 
     if not embeddings or len(embeddings) != len(texts):
-        print(
-            f"WARN: batch embed returned {len(embeddings) if embeddings else 0} "
-            f"embeddings for {len(texts)} inputs — falling back to per-chunk calls."
+        logger.warning(
+            "Batch embed count mismatch, falling back to per-chunk calls",
+            extra={"expected": len(texts), "received": len(embeddings) if embeddings else 0},
         )
         return [embed_one(t) for t in texts]
 
