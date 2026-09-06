@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 import traceback
 from contextlib import asynccontextmanager
 
@@ -12,6 +11,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app.chat_engine import ChatEngine, QuotaError
+from app.config import settings
 from app.database import init_db
 
 logger = logging.getLogger("documind")
@@ -38,12 +38,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 #   - Rate limiting (below) bounds cost/abuse from direct callers
 #     (curl, Postman, scripts) that CORS can't stop, since CORS is a
 #     browser-enforced rule only.
-ALLOWED_ORIGINS = [
-    o.strip() for o in os.getenv(
-        "ALLOWED_ORIGINS",
-        "http://localhost:5173"
-    ).split(",") if o.strip()
-]
+ALLOWED_ORIGINS = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
