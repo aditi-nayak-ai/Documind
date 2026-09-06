@@ -1,6 +1,9 @@
 from sqlalchemy import create_engine, text
 
 from app.config import settings
+from app.logging_config import setup_logging
+
+logger = setup_logging("documind")
 
 _engine = None
 
@@ -14,6 +17,18 @@ def get_engine():
             pool_recycle=300,
         )
     return _engine
+
+
+def check_connection() -> bool:
+    """Used by GET /health to verify the DB is actually reachable, not
+    just that the FastAPI process is alive. A crashed/unreachable DB
+    should surface as an unhealthy service, not a silent 200."""
+    try:
+        with get_engine().connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True
+    except Exception:  # noqa: BLE001 -- deliberate: any failure here means "not healthy", the specific exception type doesn't change the health-check outcome
+        return False
 
 
 def init_db():
@@ -83,8 +98,11 @@ def init_db():
             """))
             conn.commit()
     except Exception as e:  # noqa: BLE001 -- deliberate: a missing ANN index should degrade to a full scan, never block app startup, regardless of which pgvector/driver error caused it
-        print(f"WARN: could not create ANN index on document_chunks.embedding: {e}")
-        print("Vector search will still work but will use a full scan instead of an index.")
+        logger.warning(
+            "Could not create ANN index on document_chunks.embedding -- "
+            "vector search will still work but will use a full scan instead of an index",
+            extra={"error": str(e)},
+        )
 
 
 def insert_chunk(content: str, embedding: list, doc_id: str):
