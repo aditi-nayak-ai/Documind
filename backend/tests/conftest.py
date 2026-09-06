@@ -32,6 +32,7 @@ os.environ.setdefault("GEMINI_API_KEY", "test-key-not-a-real-key")
 from app import database
 from app.chat_engine import ChatEngine
 
+
 @pytest.fixture(scope="session", autouse=True)
 def _init_test_database():
     """Create tables/indexes once per test session against the real DB."""
