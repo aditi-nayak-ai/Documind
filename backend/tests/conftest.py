@@ -29,8 +29,8 @@ os.environ.setdefault(
 )
 os.environ.setdefault("GEMINI_API_KEY", "test-key-not-a-real-key")
 
-from app import database  # noqa: E402  (import after env setup, see above)
-from app.chat_engine import ChatEngine  # noqa: E402
+from app import database
+from app.chat_engine import ChatEngine
 
 @pytest.fixture(scope="session", autouse=True)
 def _init_test_database():
