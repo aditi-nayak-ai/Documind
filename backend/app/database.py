@@ -1,6 +1,6 @@
-import os
-
 from sqlalchemy import create_engine, text
+
+from app.config import settings
 
 _engine = None
 
@@ -9,7 +9,7 @@ def get_engine():
     global _engine
     if _engine is None:
         _engine = create_engine(
-            os.getenv("DATABASE_URL"),
+            settings.database_url,
             pool_pre_ping=True,
             pool_recycle=300,
         )
