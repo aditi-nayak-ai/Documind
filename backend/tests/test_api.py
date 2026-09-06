@@ -44,7 +44,6 @@ def mocked_chat(monkeypatch):
 def _minimal_pdf_bytes() -> bytes:
     """A tiny valid PDF with extractable text, built with pypdf so the test
     doesn't depend on a fixture binary file living in the repo."""
-    from pypdf import PdfWriter
     from reportlab.pdfgen import canvas
 
     buf = io.BytesIO()
