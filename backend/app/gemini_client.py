@@ -4,8 +4,10 @@ from google import genai
 
 from app.config import settings
 from app.exceptions import QuotaError
+from app.logging_config import setup_logging
 
 _client = None
+logger = setup_logging("documind")
 
 
 def get_client():
@@ -22,10 +24,10 @@ def classify_quota_error(e) -> QuotaError:
     """Best-guess heuristic until you've seen a real 429 payload logged
     from Render. Common Gemini per-minute errors mention "PerMinute" or
     "RPM"; daily errors mention "PerDay" or "RPD". Replace this once
-    you know the real string -- see the print() below, check Render logs
+    you know the real string -- see the log line below, check Render logs
     the next time a real quota error fires."""
     raw = str(e)
-    print("RAW GEMINI ERROR:", raw)
+    logger.warning("Gemini quota error", extra={"raw_error": raw})
     lowered = raw.lower()
     is_daily = not any(tok in lowered for tok in ["perminute", "rpm", "per minute"])
     return QuotaError(raw=raw, is_daily=is_daily)
