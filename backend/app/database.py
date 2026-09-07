@@ -34,6 +34,30 @@ def check_connection() -> bool:
 def init_db():
     with get_engine().connect() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+
+        # --- Auth tables --------------------------------------------------
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        # Per-user counters, incremented alongside the global counters in
+        # app/metrics.py. Separate from that in-memory, process-local
+        # Metrics class: this is per-user, persisted, and survives a
+        # restart -- the two serve different purposes and neither
+        # replaces the other.
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS user_usage (
+                user_id INTEGER PRIMARY KEY REFERENCES users(id),
+                ingests_count INTEGER DEFAULT 0,
+                queries_count INTEGER DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS document_chunks (
                 id SERIAL PRIMARY KEY,
@@ -66,8 +90,21 @@ def init_db():
         conn.execute(text("""
             ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash TEXT
         """))
+        # Nullable and not backfilled automatically -- see MIGRATION.md.
+        # Existing rows get user_id = NULL, which matches no authenticated
+        # user (NULL = :id is NULL, not true, in SQL), so they become
+        # unreachable via the user-scoped queries below until manually
+        # backfilled or re-uploaded. Deliberate: the alternative is
+        # leaving pre-auth rows readable by any account, which defeats
+        # the point of adding auth in the first place.
+        conn.execute(text("""
+            ALTER TABLE documents ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id)
+        """))
         conn.execute(text("""
             CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents (content_hash)
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_documents_user_id ON documents (user_id)
         """))
         # Every search_chunks() call filters WHERE document_name = :doc_id before
         # sorting by vector distance. Without this, that filter is a sequential
@@ -105,6 +142,71 @@ def init_db():
         )
 
 
+# --- Users ------------------------------------------------------------
+
+def create_user(email: str, password_hash: str) -> dict:
+    with get_engine().connect() as conn:
+        result = conn.execute(
+            text("""
+                INSERT INTO users (email, password_hash)
+                VALUES (:email, :password_hash)
+                RETURNING id, email, created_at
+            """),
+            {"email": email, "password_hash": password_hash},
+        ).fetchone()
+        conn.execute(
+            text("""
+                INSERT INTO user_usage (user_id) VALUES (:user_id)
+                ON CONFLICT (user_id) DO NOTHING
+            """),
+            {"user_id": result[0]},
+        )
+        conn.commit()
+        return {"id": result[0], "email": result[1], "created_at": result[2]}
+
+
+def get_user_by_email(email: str) -> dict:
+    with get_engine().connect() as conn:
+        result = conn.execute(
+            text("SELECT id, email, password_hash, created_at FROM users WHERE email = :email"),
+            {"email": email},
+        ).fetchone()
+        if result:
+            return {"id": result[0], "email": result[1], "password_hash": result[2], "created_at": result[3]}
+        return None
+
+
+def get_user_by_id(user_id: int) -> dict:
+    with get_engine().connect() as conn:
+        result = conn.execute(
+            text("SELECT id, email, created_at FROM users WHERE id = :id"),
+            {"id": user_id},
+        ).fetchone()
+        if result:
+            return {"id": result[0], "email": result[1], "created_at": result[2]}
+        return None
+
+
+def increment_user_usage(user_id: int, kind: str) -> None:
+    """kind is 'ingests' or 'queries'. Upserts so this is safe even if a
+    user row predates the user_usage table (shouldn't happen post-init_db,
+    but cheap insurance)."""
+    column = "ingests_count" if kind == "ingests" else "queries_count"
+    with get_engine().connect() as conn:
+        conn.execute(
+            text(f"""
+                INSERT INTO user_usage (user_id, {column}, updated_at)
+                VALUES (:user_id, 1, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id) DO UPDATE
+                SET {column} = user_usage.{column} + 1, updated_at = CURRENT_TIMESTAMP
+            """),
+            {"user_id": user_id},
+        )
+        conn.commit()
+
+
+# --- Chunks -------------------------------------------------------------
+
 def insert_chunk(content: str, embedding: list, doc_id: str):
     vector_str = "[" + ",".join(map(str, embedding)) + "]"
     with get_engine().connect() as conn:
@@ -119,6 +221,11 @@ def insert_chunk(content: str, embedding: list, doc_id: str):
 
 
 def search_chunks(query_embedding: list, doc_id: str, top_k: int = 3) -> list:
+    """No user_id filter here by design: doc_id is an unguessable UUID,
+    and every caller (RagService.ask, via the /query route) is required
+    to confirm the caller owns doc_id via get_document(doc_id, user_id)
+    BEFORE calling this. Ownership is enforced once, at that lookup, not
+    duplicated into every downstream chunk query."""
     vector_str = "[" + ",".join(map(str, query_embedding)) + "]"
     with get_engine().connect() as conn:
         result = conn.execute(
@@ -133,13 +240,15 @@ def search_chunks(query_embedding: list, doc_id: str, top_k: int = 3) -> list:
         return [row[0] for row in result.fetchall()]
 
 
+# --- Documents (user_id-scoped) -----------------------------------------
+
 def save_document(doc_id: str, filename: str, content_hash: str, summary: str, facts: str,
-                   chunk_count: int = 0, is_partial: bool = False):
+                   chunk_count: int = 0, is_partial: bool = False, user_id: int | None = None):
     with get_engine().connect() as conn:
         conn.execute(
             text("""
-                INSERT INTO documents (doc_id, filename, content_hash, summary, facts, chunk_count, is_partial)
-                VALUES (:doc_id, :filename, :content_hash, :summary, :facts, :chunk_count, :is_partial)
+                INSERT INTO documents (doc_id, filename, content_hash, summary, facts, chunk_count, is_partial, user_id)
+                VALUES (:doc_id, :filename, :content_hash, :summary, :facts, :chunk_count, :is_partial, :user_id)
                 ON CONFLICT (doc_id) DO UPDATE
                 SET summary = EXCLUDED.summary,
                     facts = EXCLUDED.facts,
@@ -147,19 +256,24 @@ def save_document(doc_id: str, filename: str, content_hash: str, summary: str, f
                     is_partial = EXCLUDED.is_partial
             """),
             {"doc_id": doc_id, "filename": filename, "content_hash": content_hash,
-             "summary": summary, "facts": facts, "chunk_count": chunk_count, "is_partial": is_partial}
+             "summary": summary, "facts": facts, "chunk_count": chunk_count,
+             "is_partial": is_partial, "user_id": user_id}
         )
         conn.commit()
 
 
-def get_document(doc_id: str) -> dict:
+def get_document(doc_id: str, user_id: int) -> dict:
+    """user_id is required, not optional: every caller must know who is
+    asking. Passing None here won't magically return unowned/pre-auth
+    rows -- SQL's `user_id = NULL` is NULL, not true, so it matches
+    nothing, same as for any other mismatched id. See MIGRATION.md."""
     with get_engine().connect() as conn:
         result = conn.execute(
             text("""
                 SELECT doc_id, filename, summary, facts, chunk_count, is_partial, content_hash
-                FROM documents WHERE doc_id = :doc_id
+                FROM documents WHERE doc_id = :doc_id AND user_id = :user_id
             """),
-            {"doc_id": doc_id}
+            {"doc_id": doc_id, "user_id": user_id}
         ).fetchone()
         if result:
             return {"doc_id": result[0], "filename": result[1], "summary": result[2],
@@ -168,22 +282,24 @@ def get_document(doc_id: str) -> dict:
         return None
 
 
-def get_document_by_hash(content_hash: str) -> dict:
+def get_document_by_hash(content_hash: str, user_id: int) -> dict:
     """
-    Look up the most recent document with this exact content hash.
-    Hash-based, not filename-based — editing a PDF and re-uploading it
-    under the same name will no longer silently reuse stale chunks.
+    Look up the most recent document with this exact content hash,
+    scoped to one user -- reuse/dedup is per-account, not global, so
+    uploading the same PDF as two different users creates two rows (each
+    user gets their own doc_id to own/delete/query independently) even
+    though the underlying chunks and embeddings are identical content.
     """
     with get_engine().connect() as conn:
         result = conn.execute(
             text("""
                 SELECT doc_id, filename, summary, facts, chunk_count, is_partial
                 FROM documents
-                WHERE content_hash = :content_hash
+                WHERE content_hash = :content_hash AND user_id = :user_id
                 ORDER BY created_at DESC
                 LIMIT 1
             """),
-            {"content_hash": content_hash}
+            {"content_hash": content_hash, "user_id": user_id}
         ).fetchone()
         if result:
             return {"doc_id": result[0], "filename": result[1], "summary": result[2],
