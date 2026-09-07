@@ -1,5 +1,5 @@
 """Stateless JWT auth.
-
+ 
 Deliberately simple: bcrypt password hashing, a signed JWT carrying the
 user id, and one FastAPI dependency (get_current_user) that routes
 requiring auth depend on. No session store, no refresh tokens, no
@@ -10,7 +10,7 @@ config.py) with no way to force-invalidate it server-side; if that ever
 matters for this project, the fix is a server-side revocation store
 (e.g. a denylist of token IDs in Redis/Postgres checked on every
 request), not a change to this file's basic shape.
-
+ 
 get_current_user raises HTTPException(401) for every failure mode --
 missing header, malformed token, expired token, forged signature, or a
 token for a user that no longer exists -- and never any other status.
@@ -18,20 +18,20 @@ The frontend's axios interceptor (api.js) depends on that: any 401 means
 "drop the token and show the login screen," and that's only safe to do
 unconditionally if 401 is never used here to mean something else.
 """
-
+ 
 import time
-
+ 
 import bcrypt
 import jwt
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-
+ 
 from app.config import settings
 from app.database import get_user_by_id
-
+ 
 _bearer_scheme = HTTPBearer(auto_error=False)
-
-
+ 
+ 
 def _require_secret_key() -> str:
     if not settings.jwt_secret_key:
         # Fails loudly at first use rather than silently signing/verifying
@@ -43,16 +43,16 @@ def _require_secret_key() -> str:
             "and set it as an environment variable before starting the server."
         )
     return settings.jwt_secret_key
-
-
+ 
+ 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-
-
+ 
+ 
 def verify_password(password: str, password_hash: str) -> bool:
     return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
-
-
+ 
+ 
 def create_access_token(user_id: int, email: str) -> str:
     now = int(time.time())
     payload = {
@@ -62,16 +62,16 @@ def create_access_token(user_id: int, email: str) -> str:
         "exp": now + settings.jwt_expire_minutes * 60,
     }
     return jwt.encode(payload, _require_secret_key(), algorithm=settings.jwt_algorithm)
-
-
+ 
+ 
 def decode_access_token(token: str) -> dict:
     """Raises jwt exceptions on any failure -- expired, malformed, bad
     signature. Callers (get_current_user below) are responsible for
     turning those into the single HTTPException(401) this module
     guarantees; this function itself doesn't touch HTTP concerns."""
     return jwt.decode(token, _require_secret_key(), algorithms=[settings.jwt_algorithm])
-
-
+ 
+ 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),  # noqa: B008 -- FastAPI's documented DI pattern
 ):
@@ -86,7 +86,7 @@ async def get_current_user(
         payload = decode_access_token(credentials.credentials)
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token.")
-
+ 
     user = get_user_by_id(int(payload["sub"]))
     if user is None:
         # Token is validly signed but the user it names no longer exists
