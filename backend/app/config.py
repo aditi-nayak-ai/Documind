@@ -1,3 +1,4 @@
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
  
  
@@ -27,17 +28,6 @@ class Settings(BaseSettings):
     jwt_secret_key: str = ""
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60 * 24 * 7
- 
-    # Per-user quota. NOTE: these are LIFETIME totals, not daily -- they
-    # check against user_usage.ingests_count / queries_count, which are
-    # plain incrementing counters with no date dimension (see
-    # database.py init_db). That's a real design choice already baked
-    # into the schema, not something introduced here: if you want a
-    # daily-resetting quota instead, user_usage needs a date column and
-    # these checks need to filter on it, which is a schema migration, not
-    # a config change.
-    max_ingests_per_user: int = 50
-    max_queries_per_user: int = 500
  
  
 settings = Settings()
