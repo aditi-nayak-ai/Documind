@@ -1,7 +1,8 @@
+
 import hashlib
 import json
 import uuid
-
+ 
 from app import embeddings, llm, pdf_extraction
 from app.database import (
     get_document,
@@ -10,9 +11,9 @@ from app.database import (
     save_document,
     search_chunks,
 )
-from app.exceptions import QuotaError
+from app.exceptions import DocumentNotFoundError, QuotaError
 from app.gemini_client import call_with_retry, classify_quota_error, get_client
-
+ 
 # Summary/facts are generated from a prefix of the document, not the whole
 # thing — gemini-2.0-flash's context window could fit far more, but keeping
 # this bounded controls latency/cost per upload. 15,000 chars covers most
@@ -22,13 +23,13 @@ from app.gemini_client import call_with_retry, classify_quota_error, get_client
 # exceeds this, load_pdf() now says so explicitly in the summary text and
 # in a `summary_truncated` flag, instead of staying quiet about it.
 SUMMARY_CONTEXT_CHARS = 15000
-
-
+ 
+ 
 class RagService:
     """Orchestrates ingestion (extract -> chunk -> embed -> store ->
     summarize) and querying (embed question -> retrieve -> generate
     answer).
-
+ 
     The `_embed`, `_embed_batch`, `_generate`, and `_chunk_text` methods
     below are thin wrappers over the module-level functions in
     embeddings.py/llm.py/pdf_extraction.py. load_pdf() and ask() call
@@ -39,42 +40,42 @@ class RagService:
     imported. Calling the module functions directly from load_pdf/ask
     would bypass any such per-instance override silently.
     """
-
+ 
     def __init__(self):
         self.client = get_client()
-
+ 
     def _classify_quota_error(self, e) -> QuotaError:
         return classify_quota_error(e)
-
+ 
     def _call_with_retry(self, fn, max_attempts: int = 3):
         return call_with_retry(fn, max_attempts)
-
+ 
     def _embed(self, text: str) -> list:
         return embeddings.embed_one(text)
-
+ 
     def _embed_batch(self, texts: list) -> list:
         return embeddings.embed_batch(texts)
-
+ 
     def _chunk_text(self, text: str, chunk_size: int = 500, overlap: int = 80) -> list:
         return pdf_extraction.chunk_text(text, chunk_size, overlap)
-
+ 
     def _generate(self, prompt: str) -> str:
         return llm.generate(prompt)
-
+ 
     def load_pdf(self, contents: bytes, filename: str, force_reingest: bool = False, user_id: int | None = None) -> dict:
         content_hash = hashlib.sha256(contents).hexdigest()
-
+ 
         if not force_reingest:
             existing = get_document_by_hash(content_hash, user_id)
             if existing and not existing.get("partial"):
                 existing["reused"] = True
                 return existing
-
+ 
         full_text = pdf_extraction.extract_text(contents)
-
+ 
         doc_id = str(uuid.uuid4())
         chunks = self._chunk_text(full_text)
-
+ 
         embedded_count = 0
         try:
             for batch_start in range(0, len(chunks), embeddings.EMBED_BATCH_SIZE):
@@ -103,10 +104,10 @@ class RagService:
                 "reused": False,
                 "partial": True,
             }
-
+ 
         doc_truncated = len(full_text) > SUMMARY_CONTEXT_CHARS
         text_for_summary = full_text[:SUMMARY_CONTEXT_CHARS]
-
+ 
         try:
             summary = self._generate(
                 "Summarize this document in 3-4 sentences. Be concise and clear.\n\n"
@@ -122,7 +123,7 @@ class RagService:
         except QuotaError as e:
             wait_note = "Please wait a minute and try again." if not e.is_daily else "Quota resets daily — try again later."
             summary = f"Summary unavailable — Gemini quota limit reached. {wait_note}"
-
+ 
         facts_raw = None
         try:
             facts_raw = self._generate(
@@ -145,7 +146,7 @@ class RagService:
             facts = [facts_raw] if facts_raw is not None else [
                 "Key facts unavailable — an unexpected error occurred during extraction."
             ]
-
+ 
         save_document(doc_id, filename, content_hash, summary, json.dumps(facts),
                       chunk_count=len(chunks), is_partial=False, user_id=user_id)
         return {
@@ -157,8 +158,17 @@ class RagService:
             "reused": False,
             "summary_truncated": doc_truncated,
         }
-
-    def ask(self, question: str, doc_id: str) -> str:
+ 
+    def ask(self, question: str, doc_id: str, user_id: int) -> str:
+        # This is the ONLY ownership check in the entire query path --
+        # search_chunks() deliberately has none (see its docstring in
+        # database.py). Without this line, any authenticated user could
+        # query any other user's document just by knowing/guessing its
+        # doc_id, since UUIDs leak through browser history, shared links,
+        # or server logs far more easily than a password does.
+        if not get_document(doc_id, user_id):
+            raise DocumentNotFoundError(doc_id)
+ 
         query_embedding = self._embed(question)
         relevant_chunks = search_chunks(query_embedding, doc_id, top_k=3)
         if not relevant_chunks:
@@ -171,6 +181,6 @@ class RagService:
             "Question: " + question + "\n\nAnswer:"
         )
         return self._generate(prompt)
-
+ 
     def get_document_info(self, doc_id: str, user_id: int) -> dict:
         return get_document(doc_id, user_id)
