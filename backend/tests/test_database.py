@@ -67,7 +67,7 @@ def test_search_chunks_orders_by_cosine_distance():
     assert results[0] == "close"
 
 
-def test_save_and_get_document_roundtrip(doc_id):
+def test_save_and_get_document_roundtrip(doc_id, test_user):
     database.save_document(
         doc_id=doc_id,
         filename="report.pdf",
@@ -76,9 +76,10 @@ def test_save_and_get_document_roundtrip(doc_id):
         facts='["fact one", "fact two"]',
         chunk_count=4,
         is_partial=False,
+        user_id=test_user["id"],
     )
 
-    doc = database.get_document(doc_id)
+    doc = database.get_document(doc_id, test_user["id"])
     assert doc is not None
     assert doc["filename"] == "report.pdf"
     assert doc["summary"] == "A short summary."
@@ -86,40 +87,55 @@ def test_save_and_get_document_roundtrip(doc_id):
     assert doc["is_partial"] is False
 
 
-def test_save_document_upserts_on_conflict(doc_id):
+def test_save_document_upserts_on_conflict(doc_id, test_user):
     """save_document is called once at initial ingest, and again if a
     partial (quota-interrupted) document later gets force-reingested --
     the second save must overwrite, not duplicate or error."""
-    database.save_document(doc_id, "v1.pdf", "hash1", "old summary", "[]", chunk_count=1, is_partial=True)
-    database.save_document(doc_id, "v1.pdf", "hash1", "new summary", "[]", chunk_count=10, is_partial=False)
+    database.save_document(doc_id, "v1.pdf", "hash1", "old summary", "[]", chunk_count=1, is_partial=True, user_id=test_user["id"])
+    database.save_document(doc_id, "v1.pdf", "hash1", "new summary", "[]", chunk_count=10, is_partial=False, user_id=test_user["id"])
 
-    doc = database.get_document(doc_id)
+    doc = database.get_document(doc_id, test_user["id"])
     assert doc["summary"] == "new summary"
     assert doc["chunk_count"] == 10
     assert doc["is_partial"] is False
 
 
-def test_get_document_returns_none_for_unknown_id():
-    assert database.get_document("does-not-exist") is None
+def test_get_document_returns_none_for_unknown_id(test_user):
+    assert database.get_document("does-not-exist", test_user["id"]) is None
 
 
-def test_get_document_by_hash_returns_most_recent(doc_id):
-    database.save_document(doc_id, "a.pdf", "same-hash", "summary", "[]", chunk_count=1, is_partial=False)
+def test_get_document_by_hash_returns_most_recent(doc_id, test_user):
+    database.save_document(doc_id, "a.pdf", "same-hash", "summary", "[]", chunk_count=1, is_partial=False, user_id=test_user["id"])
 
-    existing = database.get_document_by_hash("same-hash")
+    existing = database.get_document_by_hash("same-hash", test_user["id"])
     assert existing is not None
     assert existing["doc_id"] == doc_id
 
 
-def test_get_document_by_hash_returns_none_for_unknown_hash():
-    assert database.get_document_by_hash("no-such-hash") is None
+def test_get_document_by_hash_returns_none_for_unknown_hash(test_user):
+    assert database.get_document_by_hash("no-such-hash", test_user["id"]) is None
 
 
-def test_clear_document_removes_chunks_and_metadata(doc_id, fake_embedding):
+def test_clear_document_removes_chunks_and_metadata(doc_id, fake_embedding, test_user):
     database.insert_chunk("some content", fake_embedding, doc_id)
-    database.save_document(doc_id, "f.pdf", "h", "s", "[]", chunk_count=1, is_partial=False)
+    database.save_document(doc_id, "f.pdf", "h", "s", "[]", chunk_count=1, is_partial=False, user_id=test_user["id"])
 
     database.clear_document(doc_id)
 
-    assert database.get_document(doc_id) is None
+    assert database.get_document(doc_id, test_user["id"]) is None
     assert database.search_chunks(fake_embedding, doc_id, top_k=5) == []
+
+
+def test_get_document_is_scoped_to_owner(doc_id):
+    """Two different users, each with their own row -- user A must not
+    be able to read user B's document via get_document, even with the
+    correct doc_id."""
+    from app.auth import hash_password
+    user_a = database.create_user("user-a@example.com", hash_password("password-a"))
+    user_b = database.create_user("user-b@example.com", hash_password("password-b"))
+
+    database.save_document(doc_id, "a-owns-this.pdf", "hash-a", "summary", "[]",
+                            chunk_count=1, is_partial=False, user_id=user_a["id"])
+
+    assert database.get_document(doc_id, user_a["id"]) is not None
+    assert database.get_document(doc_id, user_b["id"]) is None
