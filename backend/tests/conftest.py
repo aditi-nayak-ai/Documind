@@ -1,24 +1,24 @@
 """
 Shared pytest fixtures.
-
+ 
 DB strategy: tests run against a REAL pgvector Postgres instance (not mocked),
 pointed at by TEST_DATABASE_URL (falls back to DATABASE_URL, then a local
 docker-compose default). This catches things a mocked DB layer can't:
 pgvector dimension limits, the halfvec cast, index creation, real SQL syntax
 errors. See docker-compose.yml `db` service for the local instance, or the
 `postgres-pgvector` service in ci.yml for CI.
-
+ 
 LLM strategy: Gemini calls ARE mocked (via the `chat_engine` fixture below).
 We don't want tests burning API quota, needing real credentials, or being
 flaky because of network/quota errors — and we already unit-test the quota
 logic itself against synthetic errors in test_quota_classification.py.
 """
-
+ 
 import os
 import uuid
-
+ 
 import pytest
-
+ 
 # Must be set before any `app.*` module is imported, since app.database
 # reads DATABASE_URL lazily via os.getenv() inside get_engine() -- but
 # app.chat_engine.get_client() also reads GEMINI_API_KEY at first use, so
@@ -28,18 +28,19 @@ os.environ.setdefault(
     os.environ.get("TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/documind_test"),
 )
 os.environ.setdefault("GEMINI_API_KEY", "test-key-not-a-real-key")
-
+ 
 from app import database
+from app.auth import create_access_token, hash_password
 from app.chat_engine import ChatEngine
-
-
+ 
+ 
 @pytest.fixture(scope="session", autouse=True)
 def _init_test_database():
     """Create tables/indexes once per test session against the real DB."""
     database.init_db()
     yield
-
-
+ 
+ 
 @pytest.fixture(autouse=True)
 def _clean_tables():
     """Truncate data between every test so tests don't leak state into
@@ -47,17 +48,49 @@ def _clean_tables():
     yield
     with database.get_engine().connect() as conn:
         from sqlalchemy import text
-        conn.execute(text("TRUNCATE TABLE document_chunks, documents"))
+        # CASCADE needed now: documents.user_id and user_usage.user_id
+        # both reference users(id).
+        conn.execute(text("TRUNCATE TABLE document_chunks, documents, users, user_usage CASCADE"))
         conn.commit()
-
-
+ 
+ 
+@pytest.fixture
+def make_user():
+    """Factory fixture: make_user("a@example.com") creates a real user row
+    and returns {id, email, token, headers}. Call twice with different
+    emails for multi-user/ownership tests."""
+    def _make(email: str = "test@example.com", password: str = "password123"):
+        user = database.create_user(email, hash_password(password))
+        token = create_access_token(user["id"], user["email"])
+        return {
+            "id": user["id"],
+            "email": user["email"],
+            "token": token,
+            "headers": {"Authorization": f"Bearer {token}"},
+        }
+    return _make
+ 
+ 
+@pytest.fixture
+def auth_headers(make_user) -> dict:
+    """The common case: one logged-in user's Authorization header."""
+    return make_user()["headers"]
+ 
+ 
+@pytest.fixture
+def user_id(make_user) -> int:
+    """Just the numeric id, for database-layer tests that call app.database
+    functions directly and need a real users.id for the foreign key."""
+    return make_user()["id"]
+ 
+ 
 @pytest.fixture
 def doc_id() -> str:
     """A fresh doc_id per test, since document_name/doc_id is how rows
     are scoped in both tables."""
     return str(uuid.uuid4())
-
-
+ 
+ 
 @pytest.fixture
 def fake_embedding() -> list:
     """A syntactically valid 3072-dim embedding (matches gemini-embedding-001)
@@ -65,8 +98,8 @@ def fake_embedding() -> list:
     most tests -- only test_database.py's ordering test cares about the
     actual numbers."""
     return [0.001 * i for i in range(3072)]
-
-
+ 
+ 
 @pytest.fixture
 def chat_engine() -> ChatEngine:
     """A real ChatEngine instance (constructing genai.Client with the dummy
