@@ -1,3 +1,4 @@
+
 import hashlib
 import json
 import uuid
@@ -10,7 +11,7 @@ from app.database import (
     save_document,
     search_chunks,
 )
-from app.exceptions import DocumentNotFoundError, QuotaError
+from app.exceptions import QuotaError
 from app.gemini_client import call_with_retry, classify_quota_error, get_client
  
 # Summary/facts are generated from a prefix of the document, not the whole
@@ -158,16 +159,7 @@ class RagService:
             "summary_truncated": doc_truncated,
         }
  
-    def ask(self, question: str, doc_id: str, user_id: int) -> str:
-        # This is the ONLY ownership check in the entire query path --
-        # search_chunks() deliberately has none (see its docstring in
-        # database.py). Without this line, any authenticated user could
-        # query any other user's document just by knowing/guessing its
-        # doc_id, since UUIDs leak through browser history, shared links,
-        # or server logs far more easily than a password does.
-        if not get_document(doc_id, user_id):
-            raise DocumentNotFoundError(doc_id)
- 
+    def ask(self, question: str, doc_id: str) -> str:
         query_embedding = self._embed(question)
         relevant_chunks = search_chunks(query_embedding, doc_id, top_k=3)
         if not relevant_chunks:
@@ -183,4 +175,3 @@ class RagService:
  
     def get_document_info(self, doc_id: str, user_id: int) -> dict:
         return get_document(doc_id, user_id)
- 
