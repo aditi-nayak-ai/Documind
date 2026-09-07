@@ -28,9 +28,9 @@ os.environ.setdefault(
     os.environ.get("TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/documind_test"),
 )
 os.environ.setdefault("GEMINI_API_KEY", "test-key-not-a-real-key")
+os.environ.setdefault("JWT_SECRET_KEY", "test-jwt-secret-not-for-production")
  
 from app import database
-from app.auth import create_access_token, hash_password
 from app.chat_engine import ChatEngine
  
  
@@ -44,44 +44,26 @@ def _init_test_database():
 @pytest.fixture(autouse=True)
 def _clean_tables():
     """Truncate data between every test so tests don't leak state into
-    each other, without paying the cost of recreating tables/indexes."""
+    each other, without paying the cost of recreating tables/indexes.
+    Order matters: document_chunks/documents/user_usage all reference
+    or relate to users, so users must be truncated last (or all together
+    in one statement, as below, which Postgres handles regardless of
+    declaration order within a single TRUNCATE)."""
     yield
     with database.get_engine().connect() as conn:
         from sqlalchemy import text
-        # CASCADE needed now: documents.user_id and user_usage.user_id
-        # both reference users(id).
-        conn.execute(text("TRUNCATE TABLE document_chunks, documents, users, user_usage CASCADE"))
+        conn.execute(text("TRUNCATE TABLE document_chunks, documents, user_usage, users CASCADE"))
         conn.commit()
  
  
 @pytest.fixture
-def make_user():
-    """Factory fixture: make_user("a@example.com") creates a real user row
-    and returns {id, email, token, headers}. Call twice with different
-    emails for multi-user/ownership tests."""
-    def _make(email: str = "test@example.com", password: str = "password123"):
-        user = database.create_user(email, hash_password(password))
-        token = create_access_token(user["id"], user["email"])
-        return {
-            "id": user["id"],
-            "email": user["email"],
-            "token": token,
-            "headers": {"Authorization": f"Bearer {token}"},
-        }
-    return _make
- 
- 
-@pytest.fixture
-def auth_headers(make_user) -> dict:
-    """The common case: one logged-in user's Authorization header."""
-    return make_user()["headers"]
- 
- 
-@pytest.fixture
-def user_id(make_user) -> int:
-    """Just the numeric id, for database-layer tests that call app.database
-    functions directly and need a real users.id for the foreign key."""
-    return make_user()["id"]
+def test_user() -> dict:
+    """A user row created directly via the DB layer (not through the
+    /auth/register HTTP route) -- useful for tests that only need a valid
+    user_id and don't care about exercising the registration endpoint
+    itself."""
+    from app.auth import hash_password
+    return database.create_user("fixture-user@example.com", hash_password("a-fixture-password"))
  
  
 @pytest.fixture
@@ -110,3 +92,4 @@ def chat_engine() -> ChatEngine:
     QuotaError.
     """
     return ChatEngine()
+ 
