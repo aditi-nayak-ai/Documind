@@ -187,22 +187,6 @@ def get_user_by_id(user_id: int) -> dict:
         return None
  
  
-def get_user_usage(user_id: int) -> dict:
-    """Read-side counterpart to increment_user_usage. Returns zeros for a
-    brand-new user whose create_user() insert into user_usage may not
-    have landed yet in some edge case, rather than raising -- a quota
-    check on a user with no usage row yet should mean "0 used," not
-    error out."""
-    with get_engine().connect() as conn:
-        result = conn.execute(
-            text("SELECT ingests_count, queries_count FROM user_usage WHERE user_id = :user_id"),
-            {"user_id": user_id},
-        ).fetchone()
-        if result:
-            return {"ingests_count": result[0], "queries_count": result[1]}
-        return {"ingests_count": 0, "queries_count": 0}
- 
- 
 def increment_user_usage(user_id: int, kind: str) -> None:
     """kind is 'ingests' or 'queries'. Upserts so this is safe even if a
     user row predates the user_usage table (shouldn't happen post-init_db,
@@ -334,3 +318,4 @@ def clear_document(doc_id: str):
             {"doc_id": doc_id}
         )
         conn.commit()
+ 
