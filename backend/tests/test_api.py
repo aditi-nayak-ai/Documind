@@ -53,12 +53,15 @@ def _minimal_pdf_bytes() -> bytes:
     buf.seek(0)
     return buf.read()
 
-
 def test_health_check(client):
+    """/health now checks real DB connectivity (see database.check_connection),
+    not just that the process is alive -- the test DB is always reachable
+    in this suite, so this exercises the healthy path."""
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
-
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["database"] == "connected"
 
 def test_root(client):
     response = client.get("/")
