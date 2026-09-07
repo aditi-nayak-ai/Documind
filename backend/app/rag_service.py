@@ -183,3 +183,4 @@ class RagService:
  
     def get_document_info(self, doc_id: str, user_id: int) -> dict:
         return get_document(doc_id, user_id)
+ 
