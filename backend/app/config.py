@@ -1,9 +1,9 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-
+ 
+ 
 class Settings(BaseSettings):
     """Centralized, typed configuration.
-
+ 
     Replaces scattered os.getenv() calls across api.py, chat_engine.py, and
     database.py with one validated source of truth, read once at import
     time instead of ad hoc at first use. Field names map to env vars
@@ -11,13 +11,13 @@ class Settings(BaseSettings):
     already used in .env / Render / docker-compose -- no env var renaming
     needed anywhere else in the stack.
     """
-
+ 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
-
+ 
     database_url: str = ""
     gemini_api_key: str = ""
     allowed_origins: str = "http://localhost:5173"
-
+ 
     # Auth. jwt_secret_key has no default on purpose -- see app/auth.py,
     # which refuses to sign/verify tokens with an empty key rather than
     # silently using a guessable default. jwt_expire_minutes defaults to
@@ -27,6 +27,18 @@ class Settings(BaseSettings):
     jwt_secret_key: str = ""
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60 * 24 * 7
-
-
+ 
+    # Per-user quota. NOTE: these are LIFETIME totals, not daily -- they
+    # check against user_usage.ingests_count / queries_count, which are
+    # plain incrementing counters with no date dimension (see
+    # database.py init_db). That's a real design choice already baked
+    # into the schema, not something introduced here: if you want a
+    # daily-resetting quota instead, user_usage needs a date column and
+    # these checks need to filter on it, which is a schema migration, not
+    # a config change.
+    max_ingests_per_user: int = 50
+    max_queries_per_user: int = 500
+ 
+ 
 settings = Settings()
+ 
