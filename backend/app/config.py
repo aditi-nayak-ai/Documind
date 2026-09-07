@@ -18,5 +18,15 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     allowed_origins: str = "http://localhost:5173"
 
+    # Auth. jwt_secret_key has no default on purpose -- see app/auth.py,
+    # which refuses to sign/verify tokens with an empty key rather than
+    # silently using a guessable default. jwt_expire_minutes defaults to
+    # 7 days: there's no refresh-token flow (see AuthContext.jsx's logout
+    # comment), so this is a straight re-login cadence, not a security
+    # backstop -- shorten it if that tradeoff doesn't suit your use case.
+    jwt_secret_key: str = ""
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 60 * 24 * 7
+
 
 settings = Settings()
