@@ -1,13 +1,13 @@
 from sqlalchemy import create_engine, text
-
+ 
 from app.config import settings
 from app.logging_config import setup_logging
-
+ 
 logger = setup_logging("documind")
-
+ 
 _engine = None
-
-
+ 
+ 
 def get_engine():
     global _engine
     if _engine is None:
@@ -17,8 +17,8 @@ def get_engine():
             pool_recycle=300,
         )
     return _engine
-
-
+ 
+ 
 def check_connection() -> bool:
     """Used by GET /health to verify the DB is actually reachable, not
     just that the FastAPI process is alive. A crashed/unreachable DB
@@ -29,12 +29,12 @@ def check_connection() -> bool:
         return True
     except Exception:  # noqa: BLE001 -- deliberate: any failure here means "not healthy", the specific exception type doesn't change the health-check outcome
         return False
-
-
+ 
+ 
 def init_db():
     with get_engine().connect() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-
+ 
         # --- Auth tables --------------------------------------------------
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS users (
@@ -57,7 +57,7 @@ def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
-
+ 
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS document_chunks (
                 id SERIAL PRIMARY KEY,
@@ -114,7 +114,7 @@ def init_db():
             ON document_chunks (document_name)
         """))
         conn.commit()
-
+ 
     # The ANN index on `embedding` is handled in its own connection/transaction,
     # deliberately isolated from everything above. pgvector's plain `vector`
     # type can only be HNSW-indexed up to 2,000 dimensions — Gemini's
@@ -140,10 +140,10 @@ def init_db():
             "vector search will still work but will use a full scan instead of an index",
             extra={"error": str(e)},
         )
-
-
+ 
+ 
 # --- Users ------------------------------------------------------------
-
+ 
 def create_user(email: str, password_hash: str) -> dict:
     with get_engine().connect() as conn:
         result = conn.execute(
@@ -163,8 +163,8 @@ def create_user(email: str, password_hash: str) -> dict:
         )
         conn.commit()
         return {"id": result[0], "email": result[1], "created_at": result[2]}
-
-
+ 
+ 
 def get_user_by_email(email: str) -> dict:
     with get_engine().connect() as conn:
         result = conn.execute(
@@ -174,8 +174,8 @@ def get_user_by_email(email: str) -> dict:
         if result:
             return {"id": result[0], "email": result[1], "password_hash": result[2], "created_at": result[3]}
         return None
-
-
+ 
+ 
 def get_user_by_id(user_id: int) -> dict:
     with get_engine().connect() as conn:
         result = conn.execute(
@@ -185,8 +185,24 @@ def get_user_by_id(user_id: int) -> dict:
         if result:
             return {"id": result[0], "email": result[1], "created_at": result[2]}
         return None
-
-
+ 
+ 
+def get_user_usage(user_id: int) -> dict:
+    """Read-side counterpart to increment_user_usage. Returns zeros for a
+    brand-new user whose create_user() insert into user_usage may not
+    have landed yet in some edge case, rather than raising -- a quota
+    check on a user with no usage row yet should mean "0 used," not
+    error out."""
+    with get_engine().connect() as conn:
+        result = conn.execute(
+            text("SELECT ingests_count, queries_count FROM user_usage WHERE user_id = :user_id"),
+            {"user_id": user_id},
+        ).fetchone()
+        if result:
+            return {"ingests_count": result[0], "queries_count": result[1]}
+        return {"ingests_count": 0, "queries_count": 0}
+ 
+ 
 def increment_user_usage(user_id: int, kind: str) -> None:
     """kind is 'ingests' or 'queries'. Upserts so this is safe even if a
     user row predates the user_usage table (shouldn't happen post-init_db,
@@ -203,10 +219,10 @@ def increment_user_usage(user_id: int, kind: str) -> None:
             {"user_id": user_id},
         )
         conn.commit()
-
-
+ 
+ 
 # --- Chunks -------------------------------------------------------------
-
+ 
 def insert_chunk(content: str, embedding: list, doc_id: str):
     vector_str = "[" + ",".join(map(str, embedding)) + "]"
     with get_engine().connect() as conn:
@@ -218,8 +234,8 @@ def insert_chunk(content: str, embedding: list, doc_id: str):
             {"content": content, "embedding": vector_str, "document_name": doc_id}
         )
         conn.commit()
-
-
+ 
+ 
 def search_chunks(query_embedding: list, doc_id: str, top_k: int = 3) -> list:
     """No user_id filter here by design: doc_id is an unguessable UUID,
     and every caller (RagService.ask, via the /query route) is required
@@ -238,10 +254,10 @@ def search_chunks(query_embedding: list, doc_id: str, top_k: int = 3) -> list:
             {"embedding": vector_str, "k": top_k, "document_name": doc_id}
         )
         return [row[0] for row in result.fetchall()]
-
-
+ 
+ 
 # --- Documents (user_id-scoped) -----------------------------------------
-
+ 
 def save_document(doc_id: str, filename: str, content_hash: str, summary: str, facts: str,
                    chunk_count: int = 0, is_partial: bool = False, user_id: int | None = None):
     with get_engine().connect() as conn:
@@ -260,8 +276,8 @@ def save_document(doc_id: str, filename: str, content_hash: str, summary: str, f
              "is_partial": is_partial, "user_id": user_id}
         )
         conn.commit()
-
-
+ 
+ 
 def get_document(doc_id: str, user_id: int) -> dict:
     """user_id is required, not optional: every caller must know who is
     asking. Passing None here won't magically return unowned/pre-auth
@@ -280,8 +296,8 @@ def get_document(doc_id: str, user_id: int) -> dict:
                     "facts": result[3], "chunk_count": result[4], "is_partial": result[5],
                     "content_hash": result[6]}
         return None
-
-
+ 
+ 
 def get_document_by_hash(content_hash: str, user_id: int) -> dict:
     """
     Look up the most recent document with this exact content hash,
@@ -305,8 +321,8 @@ def get_document_by_hash(content_hash: str, user_id: int) -> dict:
             return {"doc_id": result[0], "filename": result[1], "summary": result[2],
                     "facts": result[3], "chunk_count": result[4], "partial": result[5]}
         return None
-
-
+ 
+ 
 def clear_document(doc_id: str):
     with get_engine().connect() as conn:
         conn.execute(
