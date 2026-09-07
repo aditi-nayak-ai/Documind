@@ -61,11 +61,11 @@ class RagService:
     def _generate(self, prompt: str) -> str:
         return llm.generate(prompt)
 
-    def load_pdf(self, contents: bytes, filename: str, force_reingest: bool = False) -> dict:
+    def load_pdf(self, contents: bytes, filename: str, force_reingest: bool = False, user_id: int | None = None) -> dict:
         content_hash = hashlib.sha256(contents).hexdigest()
 
         if not force_reingest:
-            existing = get_document_by_hash(content_hash)
+            existing = get_document_by_hash(content_hash, user_id)
             if existing and not existing.get("partial"):
                 existing["reused"] = True
                 return existing
@@ -93,7 +93,7 @@ class RagService:
             )
             facts = ["Key facts unavailable — quota limit reached during indexing."]
             save_document(doc_id, filename, content_hash, summary, json.dumps(facts),
-                          chunk_count=embedded_count, is_partial=True)
+                          chunk_count=embedded_count, is_partial=True, user_id=user_id)
             return {
                 "doc_id": doc_id,
                 "filename": filename,
@@ -147,7 +147,7 @@ class RagService:
             ]
 
         save_document(doc_id, filename, content_hash, summary, json.dumps(facts),
-                      chunk_count=len(chunks), is_partial=False)
+                      chunk_count=len(chunks), is_partial=False, user_id=user_id)
         return {
             "doc_id": doc_id,
             "filename": filename,
@@ -172,5 +172,5 @@ class RagService:
         )
         return self._generate(prompt)
 
-    def get_document_info(self, doc_id: str) -> dict:
-        return get_document(doc_id)
+    def get_document_info(self, doc_id: str, user_id: int) -> dict:
+        return get_document(doc_id, user_id)
