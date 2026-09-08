@@ -91,8 +91,8 @@ ALLOWED_ORIGINS = [o.strip() for o in settings.allowed_origins.split(",") if o.s
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
  
 chat = ChatEngine()
