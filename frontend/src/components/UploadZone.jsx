@@ -1,9 +1,7 @@
-// Replace this import line:
 import { useState, useRef } from "react";
 import { api } from "../api";
-// (delete the old `import axios` and `const BACKEND = ...` lines)
 
-const BACKEND = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
+const res = await api.post("/ingest", formData);
 
 export default function UploadZone({ onUploadSuccess }) {
   const [dragging, setDragging] = useState(false);
