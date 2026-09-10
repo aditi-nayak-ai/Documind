@@ -100,6 +100,21 @@ def init_db():
         conn.execute(text("""
             ALTER TABLE documents ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id)
         """))
+        # True when summary/facts generation hit a QuotaError and the
+        # stored summary/facts are just the "unavailable, quota reached"
+        # placeholder text -- NOT when the chunks/embeddings failed (see
+        # is_partial for that). Without this flag, the content-hash reuse
+        # path in RagService.load_pdf() had no way to tell "a real summary
+        # was generated" apart from "a placeholder was saved because the
+        # quota was hit at that moment" -- so every re-upload of the same
+        # file just served the stale placeholder back forever, even long
+        # after the quota had reset. This flag is what lets a re-upload
+        # retry ONLY the summary/facts generation (cheap) instead of
+        # either silently failing forever or re-embedding everything
+        # (expensive, and burns embed quota for no reason).
+        conn.execute(text("""
+            ALTER TABLE documents ADD COLUMN IF NOT EXISTS needs_summary_retry BOOLEAN DEFAULT FALSE
+        """))
         conn.execute(text("""
             CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents (content_hash)
         """))
@@ -243,21 +258,23 @@ def search_chunks(query_embedding: list, doc_id: str, top_k: int = 3) -> list:
 # --- Documents (user_id-scoped) -----------------------------------------
  
 def save_document(doc_id: str, filename: str, content_hash: str, summary: str, facts: str,
-                   chunk_count: int = 0, is_partial: bool = False, user_id: int | None = None):
+                   chunk_count: int = 0, is_partial: bool = False, user_id: int | None = None,
+                   needs_summary_retry: bool = False):
     with get_engine().connect() as conn:
         conn.execute(
             text("""
-                INSERT INTO documents (doc_id, filename, content_hash, summary, facts, chunk_count, is_partial, user_id)
-                VALUES (:doc_id, :filename, :content_hash, :summary, :facts, :chunk_count, :is_partial, :user_id)
+                INSERT INTO documents (doc_id, filename, content_hash, summary, facts, chunk_count, is_partial, user_id, needs_summary_retry)
+                VALUES (:doc_id, :filename, :content_hash, :summary, :facts, :chunk_count, :is_partial, :user_id, :needs_summary_retry)
                 ON CONFLICT (doc_id) DO UPDATE
                 SET summary = EXCLUDED.summary,
                     facts = EXCLUDED.facts,
                     chunk_count = EXCLUDED.chunk_count,
-                    is_partial = EXCLUDED.is_partial
+                    is_partial = EXCLUDED.is_partial,
+                    needs_summary_retry = EXCLUDED.needs_summary_retry
             """),
             {"doc_id": doc_id, "filename": filename, "content_hash": content_hash,
              "summary": summary, "facts": facts, "chunk_count": chunk_count,
-             "is_partial": is_partial, "user_id": user_id}
+             "is_partial": is_partial, "user_id": user_id, "needs_summary_retry": needs_summary_retry}
         )
         conn.commit()
  
@@ -270,7 +287,7 @@ def get_document(doc_id: str, user_id: int) -> dict:
     with get_engine().connect() as conn:
         result = conn.execute(
             text("""
-                SELECT doc_id, filename, summary, facts, chunk_count, is_partial, content_hash
+                SELECT doc_id, filename, summary, facts, chunk_count, is_partial, content_hash, needs_summary_retry
                 FROM documents WHERE doc_id = :doc_id AND user_id = :user_id
             """),
             {"doc_id": doc_id, "user_id": user_id}
@@ -278,7 +295,7 @@ def get_document(doc_id: str, user_id: int) -> dict:
         if result:
             return {"doc_id": result[0], "filename": result[1], "summary": result[2],
                     "facts": result[3], "chunk_count": result[4], "is_partial": result[5],
-                    "content_hash": result[6]}
+                    "content_hash": result[6], "needs_summary_retry": result[7]}
         return None
  
  
@@ -293,7 +310,7 @@ def get_document_by_hash(content_hash: str, user_id: int) -> dict:
     with get_engine().connect() as conn:
         result = conn.execute(
             text("""
-                SELECT doc_id, filename, summary, facts, chunk_count, is_partial
+                SELECT doc_id, filename, summary, facts, chunk_count, is_partial, needs_summary_retry
                 FROM documents
                 WHERE content_hash = :content_hash AND user_id = :user_id
                 ORDER BY created_at DESC
@@ -303,7 +320,8 @@ def get_document_by_hash(content_hash: str, user_id: int) -> dict:
         ).fetchone()
         if result:
             return {"doc_id": result[0], "filename": result[1], "summary": result[2],
-                    "facts": result[3], "chunk_count": result[4], "partial": result[5]}
+                    "facts": result[3], "chunk_count": result[4], "partial": result[5],
+                    "needs_summary_retry": result[6]}
         return None
  
  
