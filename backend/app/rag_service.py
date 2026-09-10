@@ -61,16 +61,100 @@ class RagService:
     def _generate(self, prompt: str) -> str:
         return llm.generate(prompt)
  
+    def _generate_summary_and_facts(self, full_text: str) -> tuple:
+        """Returns (summary, facts, needs_summary_retry, doc_truncated).
+ 
+        needs_summary_retry is True whenever EITHER call hit a QuotaError
+        -- it's what load_pdf() persists so a future re-upload of the same
+        file (matched by content hash) knows the stored summary/facts are
+        just placeholder text, not a real result, and should retry
+        generation instead of treating this as a cached success forever.
+        """
+        doc_truncated = len(full_text) > SUMMARY_CONTEXT_CHARS
+        text_for_summary = full_text[:SUMMARY_CONTEXT_CHARS]
+        needs_summary_retry = False
+ 
+        try:
+            summary = self._generate(
+                "Summarize this document in 3-4 sentences. Be concise and clear.\n\n"
+                "Document:\n" + text_for_summary + "\n\nSummary:"
+            )
+            if doc_truncated:
+                summary += (
+                    f" (Note: this summary and the facts below are based on the first "
+                    f"~{SUMMARY_CONTEXT_CHARS:,} characters of a longer document — chat "
+                    f"answers still search the full text via embeddings, so the two may "
+                    f"cover different parts of the document.)"
+                )
+        except QuotaError as e:
+            wait_note = "Please wait a minute and try again." if not e.is_daily else "Quota resets daily — try again later."
+            summary = f"Summary unavailable — Gemini quota limit reached. {wait_note}"
+            needs_summary_retry = True
+ 
+        facts_raw = None
+        try:
+            facts_raw = self._generate(
+                "Extract key facts from this document. Return a JSON array of strings.\n"
+                "Each string is one key fact, date, name, or important number.\n"
+                "Return ONLY the JSON array, nothing else.\n\n"
+                "Document:\n" + text_for_summary + "\n\nFacts:"
+            )
+            facts_clean = facts_raw.strip().replace("```json", "").replace("```", "").strip()
+            facts = json.loads(facts_clean)
+        except QuotaError as e:
+            wait_note = "Please wait a minute and try again." if not e.is_daily else "Quota resets daily — try again later."
+            facts = [f"Key facts unavailable — Gemini quota limit reached. {wait_note}"]
+            needs_summary_retry = True
+        except Exception:  # noqa: BLE001 -- deliberately broad: covers both a raised ClientError/timeout from self._generate() and a JSONDecodeError from a malformed response, so fact extraction degrades gracefully either way
+            # facts_raw may be None here — e.g. self._generate() itself
+            # raised before returning anything (a non-quota ClientError,
+            # timeout, etc.) — or it may hold text that just failed to
+            # parse as JSON. Handle both instead of assuming facts_raw
+            # was always successfully assigned before this branch runs.
+            facts = [facts_raw] if facts_raw is not None else [
+                "Key facts unavailable — an unexpected error occurred during extraction."
+            ]
+            # Deliberately NOT setting needs_summary_retry here: this branch
+            # is a non-quota failure (bad JSON, unexpected error), which a
+            # retry on next upload isn't guaranteed to fix and could just
+            # loop forever. Only genuine QuotaErrors -- known to be
+            # transient -- mark this for retry.
+ 
+        return summary, facts, needs_summary_retry, doc_truncated
+ 
     def load_pdf(self, contents: bytes, filename: str, force_reingest: bool = False, user_id: int | None = None) -> dict:
         content_hash = hashlib.sha256(contents).hexdigest()
  
+        existing = None
         if not force_reingest:
             existing = get_document_by_hash(content_hash, user_id)
-            if existing and not existing.get("partial"):
+            if existing and not existing.get("partial") and not existing.get("needs_summary_retry"):
                 existing["reused"] = True
                 return existing
  
         full_text = pdf_extraction.extract_text(contents)
+ 
+        # Chunks/embeddings from a prior successful ingest of this exact
+        # content are still valid and don't need to be redone -- only the
+        # summary/facts generation failed last time. Retrying just that
+        # (cheap: 2 calls) instead of re-embedding everything (expensive,
+        # and burns the embed quota for no reason) is the whole point of
+        # tracking needs_summary_retry separately from is_partial.
+        if existing and not existing.get("partial") and existing.get("needs_summary_retry"):
+            doc_id = existing["doc_id"]
+            summary, facts, needs_summary_retry, doc_truncated = self._generate_summary_and_facts(full_text)
+            save_document(doc_id, filename, content_hash, summary, json.dumps(facts),
+                          chunk_count=existing["chunk_count"], is_partial=False,
+                          user_id=user_id, needs_summary_retry=needs_summary_retry)
+            return {
+                "doc_id": doc_id,
+                "filename": filename,
+                "summary": summary,
+                "facts": facts,
+                "chunks": existing["chunk_count"],
+                "reused": True,
+                "summary_truncated": doc_truncated,
+            }
  
         doc_id = str(uuid.uuid4())
         chunks = self._chunk_text(full_text)
@@ -104,50 +188,11 @@ class RagService:
                 "partial": True,
             }
  
-        doc_truncated = len(full_text) > SUMMARY_CONTEXT_CHARS
-        text_for_summary = full_text[:SUMMARY_CONTEXT_CHARS]
- 
-        try:
-            summary = self._generate(
-                "Summarize this document in 3-4 sentences. Be concise and clear.\n\n"
-                "Document:\n" + text_for_summary + "\n\nSummary:"
-            )
-            if doc_truncated:
-                summary += (
-                    f" (Note: this summary and the facts below are based on the first "
-                    f"~{SUMMARY_CONTEXT_CHARS:,} characters of a longer document — chat "
-                    f"answers still search the full text via embeddings, so the two may "
-                    f"cover different parts of the document.)"
-                )
-        except QuotaError as e:
-            wait_note = "Please wait a minute and try again." if not e.is_daily else "Quota resets daily — try again later."
-            summary = f"Summary unavailable — Gemini quota limit reached. {wait_note}"
- 
-        facts_raw = None
-        try:
-            facts_raw = self._generate(
-                "Extract key facts from this document. Return a JSON array of strings.\n"
-                "Each string is one key fact, date, name, or important number.\n"
-                "Return ONLY the JSON array, nothing else.\n\n"
-                "Document:\n" + text_for_summary + "\n\nFacts:"
-            )
-            facts_clean = facts_raw.strip().replace("```json", "").replace("```", "").strip()
-            facts = json.loads(facts_clean)
-        except QuotaError as e:
-            wait_note = "Please wait a minute and try again." if not e.is_daily else "Quota resets daily — try again later."
-            facts = [f"Key facts unavailable — Gemini quota limit reached. {wait_note}"]
-        except Exception:  # noqa: BLE001 -- deliberately broad: covers both a raised ClientError/timeout from self._generate() and a JSONDecodeError from a malformed response, so fact extraction degrades gracefully either way
-            # facts_raw may be None here — e.g. self._generate() itself
-            # raised before returning anything (a non-quota ClientError,
-            # timeout, etc.) — or it may hold text that just failed to
-            # parse as JSON. Handle both instead of assuming facts_raw
-            # was always successfully assigned before this branch runs.
-            facts = [facts_raw] if facts_raw is not None else [
-                "Key facts unavailable — an unexpected error occurred during extraction."
-            ]
+        summary, facts, needs_summary_retry, doc_truncated = self._generate_summary_and_facts(full_text)
  
         save_document(doc_id, filename, content_hash, summary, json.dumps(facts),
-                      chunk_count=len(chunks), is_partial=False, user_id=user_id)
+                      chunk_count=len(chunks), is_partial=False, user_id=user_id,
+                      needs_summary_retry=needs_summary_retry)
         return {
             "doc_id": doc_id,
             "filename": filename,
@@ -174,3 +219,4 @@ class RagService:
  
     def get_document_info(self, doc_id: str, user_id: int) -> dict:
         return get_document(doc_id, user_id)
+ 
