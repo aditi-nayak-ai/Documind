@@ -336,4 +336,3 @@ def clear_document(doc_id: str):
             {"doc_id": doc_id}
         )
         conn.commit()
- 
