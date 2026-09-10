@@ -1,199 +1,202 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { api } from "../api";
 
-export default function UploadZone({ onUploadSuccess }) {
-  const [dragging, setDragging] = useState(false);
+export default function ChatWindow({ docId }) {
+  const [messages, setMessages] = useState([]);
+  const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const inputRef = useRef();
+  const bottomRef = useRef();
 
-  const handleFile = async (file) => {
-    if (!file || !file.name.endsWith(".pdf")) {
-      setError("Only PDF files are accepted.");
-      return;
-    }
+  // Scroll to the newest message whenever the conversation grows.
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const handleSend = async () => {
+    const trimmed = question.trim();
+    if (!trimmed || loading) return;
+
     setError("");
+    setMessages((prev) => [...prev, { role: "user", text: trimmed }]);
+    setQuestion("");
     setLoading(true);
-    const formData = new FormData();
-    formData.append("file", file);
+
     try {
-      const res = await api.post("/ingest", formData);
-      onUploadSuccess(res.data);
+      const res = await api.post("/query", { question: trimmed, doc_id: docId });
+      setMessages((prev) => [...prev, { role: "assistant", text: res.data.answer }]);
     } catch (e) {
+      let msg;
       if (e.response) {
         const { status, data } = e.response;
-        if (status === 401) {
-          setError("Your session expired. Please log in again.");
-        } else if (status === 429) setError(data?.detail || "Quota reached. Please try again later.");
-        else if (status === 413) setError("File too large. Maximum size is 10 MB.");
-        else if (status === 400) setError(data?.detail || "Invalid file. Only PDF files are accepted.");
-        else setError(data?.detail || "Upload failed. Please try again.");
+        if (status === 401) msg = "Your session expired. Please log in again.";
+        else if (status === 404) msg = "This document could not be found.";
+        else if (status === 429) msg = data?.detail || "Quota reached. Please wait a moment and try again.";
+        else msg = data?.detail || "Something went wrong answering that. Please try again.";
       } else if (e.request) {
-        setError("Cannot reach the server. Check that the backend is running.");
+        msg = "Cannot reach the server. It may be starting up — please wait a few seconds and try again.";
       } else {
-        setError("Unexpected error. Please try again.");
+        msg = "Unexpected error. Please try again.";
       }
+      setError(msg);
+      // Also surface the failure inline in the conversation, so it's
+      // clear which question didn't get answered rather than just a
+      // banner disconnected from the message list.
+      setMessages((prev) => [...prev, { role: "assistant", text: msg, isError: true }]);
     } finally {
       setLoading(false);
-      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
     }
   };
 
   const s = {
-    page: {
+    wrap: {
       display: "flex",
       flexDirection: "column",
-      alignItems: "center",
-      justifyContent: "center",
-      minHeight: "100vh",
-      padding: "2rem",
+      height: "100%",
       background: "var(--bg)",
     },
-    wordmark: {
-      fontSize: "32px",
-      fontWeight: 600,
-      color: "var(--text-primary)",
-      letterSpacing: "-0.5px",
-      marginBottom: "6px",
+    messages: {
+      flex: 1,
+      overflowY: "auto",
+      padding: "24px",
+      display: "flex",
+      flexDirection: "column",
+      gap: "14px",
     },
-    accent: { color: "var(--accent)" },
-    tagline: {
-      fontSize: "14px",
-      color: "var(--text-secondary)",
-      marginBottom: "2.5rem",
-    },
-    dropZone: {
-      width: "100%",
-      maxWidth: "460px",
-      border: `1.5px dashed ${dragging ? "var(--accent)" : "var(--border-mid)"}`,
-      borderRadius: "var(--radius-lg)",
-      padding: "3rem 2rem",
-      textAlign: "center",
-      cursor: "pointer",
-      background: dragging ? "var(--accent-light)" : "var(--bg-card)",
-      transition: "border-color 0.15s, background 0.15s",
-    },
-    iconWrap: {
-      width: "48px",
-      height: "48px",
-      borderRadius: "var(--radius)",
-      background: "var(--accent-light)",
+    empty: {
+      flex: 1,
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
-      margin: "0 auto 16px",
-      border: "1px solid var(--accent-border)",
-    },
-    dropTitle: {
-      fontSize: "15px",
-      fontWeight: 500,
-      color: "var(--text-primary)",
-      marginBottom: "4px",
-    },
-    dropSub: {
+      color: "var(--text-muted)",
       fontSize: "13px",
-      color: "var(--text-secondary)",
-      marginBottom: "20px",
+      textAlign: "center",
     },
-    btn: {
-      display: "inline-flex",
-      alignItems: "center",
-      gap: "7px",
+    row: (isUser) => ({
+      display: "flex",
+      justifyContent: isUser ? "flex-end" : "flex-start",
+    }),
+    bubble: (isUser, isError) => ({
+      maxWidth: "70%",
+      padding: "10px 14px",
+      borderRadius: "var(--radius)",
+      fontSize: "13.5px",
+      lineHeight: 1.5,
+      whiteSpace: "pre-wrap",
+      background: isError ? "var(--danger-bg)" : isUser ? "var(--accent)" : "var(--bg-card)",
+      color: isError ? "var(--danger-text)" : isUser ? "#fff" : "var(--text-primary)",
+      border: isError ? "1px solid var(--danger-text)" : isUser ? "none" : "1px solid var(--border)",
+    }),
+    typingRow: { display: "flex", justifyContent: "flex-start" },
+    typingBubble: {
+      padding: "10px 14px",
+      borderRadius: "var(--radius)",
+      background: "var(--bg-card)",
+      border: "1px solid var(--border)",
+      display: "flex",
+      gap: "4px",
+    },
+    dot: {
+      width: "6px",
+      height: "6px",
+      borderRadius: "50%",
+      background: "var(--text-muted)",
+    },
+    inputBar: {
+      display: "flex",
+      alignItems: "flex-end",
+      gap: "10px",
+      padding: "14px 20px",
+      borderTop: "1px solid var(--border)",
+      background: "var(--bg-card)",
+    },
+    textarea: {
+      flex: 1,
+      resize: "none",
+      minHeight: "22px",
+      maxHeight: "120px",
+      padding: "9px 12px",
+      background: "var(--bg)",
+      border: "1px solid var(--border-mid)",
+      borderRadius: "var(--radius-sm)",
+      color: "var(--text-primary)",
+      fontSize: "13.5px",
+      fontFamily: "inherit",
+      outline: "none",
+    },
+    sendBtn: {
       background: "var(--accent)",
       color: "#fff",
+      border: "none",
+      borderRadius: "var(--radius-sm)",
+      padding: "9px 18px",
       fontSize: "13px",
       fontWeight: 500,
-      padding: "8px 20px",
-      borderRadius: "var(--radius-sm)",
-      border: "none",
       cursor: "pointer",
       fontFamily: "inherit",
+      opacity: loading || !question.trim() ? 0.5 : 1,
     },
-    limitTag: {
-      display: "inline-block",
-      marginTop: "14px",
-      fontSize: "11px",
-      color: "var(--text-muted)",
-      background: "rgba(255,255,255,0.04)",
-      padding: "3px 10px",
-      borderRadius: "20px",
-    },
-    spinner: {
-      width: "36px",
-      height: "36px",
-      border: "3px solid rgba(124,58,237,0.2)",
-      borderTop: "3px solid var(--accent)",
-      borderRadius: "50%",
-      margin: "0 auto 12px",
-    },
-    spinnerText: { fontSize: "13px", color: "var(--text-secondary)" },
-    errorMsg: {
-      marginTop: "16px",
-      fontSize: "13px",
+    errorBanner: {
+      margin: "0 20px 10px",
+      fontSize: "12px",
       color: "var(--danger-text)",
-      maxWidth: "460px",
-      textAlign: "center",
       background: "var(--danger-bg)",
-      padding: "10px 14px",
+      padding: "8px 12px",
       borderRadius: "var(--radius-sm)",
     },
   };
 
   return (
-    <div style={s.page}>
-      <p style={s.wordmark}>
-        Docu<span style={s.accent}>Mind</span>
-      </p>
-      <p style={s.tagline}>Upload a PDF. Get an instant summary and chat with your document.</p>
-
-      <div
-        style={s.dropZone}
-        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(e) => { e.preventDefault(); setDragging(false); handleFile(e.dataTransfer.files[0]); }}
-        onClick={() => !loading && inputRef.current.click()}
-      >
-        <input
-          ref={inputRef}
-          type="file"
-          accept=".pdf"
-          style={{ display: "none" }}
-          onChange={(e) => handleFile(e.target.files[0])}
-        />
-
-        {loading ? (
-          <>
-            <div style={s.spinner} className="spin" />
-            <p style={s.spinnerText}>Processing your document…</p>
-          </>
+    <div style={s.wrap}>
+      <div style={s.messages}>
+        {messages.length === 0 ? (
+          <div style={s.empty}>
+            Ask a question about this document to get started.
+          </div>
         ) : (
-          <>
-            <div style={s.iconWrap}>
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="17 8 12 3 7 8"/>
-                <line x1="12" y1="3" x2="12" y2="15"/>
-              </svg>
+          messages.map((m, i) => (
+            <div key={i} style={s.row(m.role === "user")}>
+              <div style={s.bubble(m.role === "user", m.isError)}>{m.text}</div>
             </div>
-            <p style={s.dropTitle}>Drop your PDF here</p>
-            <p style={s.dropSub}>or click to browse files</p>
-            <button
-              style={s.btn}
-              onClick={(e) => { e.stopPropagation(); inputRef.current.click(); }}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="17 8 12 3 7 8"/>
-                <line x1="12" y1="3" x2="12" y2="15"/>
-              </svg>
-              Choose file
-            </button>
-            <span style={s.limitTag}>PDF only · max 10 MB</span>
-          </>
+          ))
         )}
+
+        {loading && (
+          <div style={s.typingRow}>
+            <div style={s.typingBubble}>
+              <span style={s.dot} className="pulse-1" />
+              <span style={s.dot} className="pulse-2" />
+              <span style={s.dot} className="pulse-3" />
+            </div>
+          </div>
+        )}
+
+        <div ref={bottomRef} />
       </div>
 
-      {error && <p style={s.errorMsg}>{error}</p>}
+      {error && <div style={s.errorBanner}>{error}</div>}
+
+      <div style={s.inputBar}>
+        <textarea
+          style={s.textarea}
+          placeholder="Ask a question about this document…"
+          value={question}
+          onChange={(e) => setQuestion(e.target.value)}
+          onKeyDown={handleKeyDown}
+          rows={1}
+          disabled={loading}
+        />
+        <button style={s.sendBtn} onClick={handleSend} disabled={loading || !question.trim()}>
+          Send
+        </button>
+      </div>
     </div>
   );
 }
