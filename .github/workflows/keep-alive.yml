@@ -1,0 +1,23 @@
+name: Keep Backend Awake
+
+# Render's free tier spins a web service down after ~15 minutes of no
+# inbound requests, and the next request pays a 30-60s cold-start cost.
+# Pinging /health well inside that 15-minute window keeps it warm, so
+# real users never hit the cold start.
+#
+# IMPORTANT: replace the URL below with your actual Render backend URL.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"  # every 10 minutes
+  workflow_dispatch:  # lets you trigger it manually from the Actions tab too
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend health endpoint
+        run: |
+          curl -sf --max-time 70 https://documind-ctcn.onrender.com/health \
+            && echo "Backend responded OK" \
+            || echo "Ping failed or timed out -- backend may have been cold and is now warming up"
