@@ -10,7 +10,7 @@ from app.database import (
     save_document,
     search_chunks,
 )
-from app.exceptions import QuotaError
+from app.exceptions import QuotaError, RetryableGeminiError
 from app.gemini_client import call_with_retry, classify_quota_error, get_client
 
 # Summary/facts are generated from a prefix of the document, not the whole
@@ -116,6 +116,12 @@ class RagService:
         except QuotaError as e:
             wait_note = "Please wait a minute and try again." if not e.is_daily else "Quota resets daily — try again later."
             summary = f"{_SUMMARY_FAILURE_PREFIX} — Gemini quota limit reached. {wait_note}"
+        except RetryableGeminiError:
+            # TransientServerError (503, Google's infra under load) after
+            # exhausting retries -- distinct message from a quota issue,
+            # since "try again later today" isn't the right framing for
+            # "Google's servers were briefly overloaded."
+            summary = f"{_SUMMARY_FAILURE_PREFIX} — Gemini's servers are temporarily overloaded. Please try again shortly."
 
         facts_raw = None
         try:
@@ -130,6 +136,8 @@ class RagService:
         except QuotaError as e:
             wait_note = "Please wait a minute and try again." if not e.is_daily else "Quota resets daily — try again later."
             facts = [f"{_FACTS_FAILURE_PREFIX} — Gemini quota limit reached. {wait_note}"]
+        except RetryableGeminiError:
+            facts = [f"{_FACTS_FAILURE_PREFIX} — Gemini's servers are temporarily overloaded. Please try again shortly."]
         except Exception:  # noqa: BLE001 -- deliberately broad: covers both a raised ClientError/timeout from self._generate() and a JSONDecodeError from a malformed response, so fact extraction degrades gracefully either way
             # facts_raw may be None here — e.g. self._generate() itself
             # raised before returning anything (a non-quota ClientError,
@@ -186,12 +194,12 @@ class RagService:
                 for chunk, embedding in zip(batch, batch_embeddings):
                     insert_chunk(chunk, embedding, doc_id)
                     embedded_count += 1
-        except QuotaError:
+        except RetryableGeminiError:
             if embedded_count == 0:
                 raise
             summary = (
                 f"Document partially indexed ({embedded_count}/{len(chunks)} chunks) — "
-                "Gemini embedding quota was reached mid-upload. Chat will only search "
+                "Gemini was temporarily unavailable mid-upload. Chat will only search "
                 "the indexed portion until you re-upload."
             )
             facts = [f"{_FACTS_FAILURE_PREFIX} — quota limit reached during indexing."]
