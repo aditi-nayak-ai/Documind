@@ -78,3 +78,58 @@ def test_call_with_retry_gives_up_immediately_on_daily_quota(chat_engine):
     with pytest.raises(QuotaError):
         chat_engine._call_with_retry(always_daily, max_attempts=3)
     assert calls["count"] == 1  # no retries for a daily quota error
+
+
+# --- TransientServerError (503 UNAVAILABLE) ---------------------------
+
+@pytest.mark.parametrize(
+    "raw_error_text",
+    [
+        "503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand.'}}",
+        "The service is currently UNAVAILABLE, please try again later.",
+    ],
+)
+def test_503_errors_classified_as_transient_not_quota(chat_engine, raw_error_text):
+    """A 503 (Google's infra overloaded) is a completely different failure
+    mode from a 429 (your account's quota) -- it must come back as
+    TransientServerError, not get swept into the quota heuristic."""
+    from app.exceptions import TransientServerError
+
+    err = chat_engine._classify_quota_error(Exception(raw_error_text))
+    assert isinstance(err, TransientServerError)
+    assert err.is_daily is False  # always retryable, no daily/per-minute distinction applies
+
+
+def test_call_with_retry_retries_transient_server_errors(chat_engine, monkeypatch):
+    """Same retry treatment as a per-minute QuotaError -- TransientServerError
+    is Google's own "usually temporary" signal, so it should always be
+    retried rather than given up on after one attempt."""
+    from app.exceptions import TransientServerError
+
+    calls = {"count": 0}
+
+    def flaky():
+        calls["count"] += 1
+        if calls["count"] < 3:
+            raise TransientServerError(raw="503 UNAVAILABLE")
+        return "success"
+
+    monkeypatch.setattr("time.sleep", lambda _: None)
+    result = chat_engine._call_with_retry(flaky, max_attempts=3)
+    assert result == "success"
+    assert calls["count"] == 3
+
+
+def test_call_with_retry_raises_transient_error_after_max_attempts(chat_engine, monkeypatch):
+    from app.exceptions import TransientServerError
+
+    calls = {"count": 0}
+
+    def always_unavailable():
+        calls["count"] += 1
+        raise TransientServerError(raw="503 UNAVAILABLE")
+
+    monkeypatch.setattr("time.sleep", lambda _: None)
+    with pytest.raises(TransientServerError):
+        chat_engine._call_with_retry(always_unavailable, max_attempts=3)
+    assert calls["count"] == 3  # unlike daily quota, this DOES retry up to max_attempts
