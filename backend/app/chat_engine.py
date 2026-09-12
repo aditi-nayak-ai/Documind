@@ -20,6 +20,7 @@ above instead of this facade.
 
 from app.exceptions import (
     QuotaError,  # noqa: F401 -- re-exported for backward compatibility
+    TransientServerError,  # noqa: F401 -- re-exported for backward compatibility
 )
 from app.rag_service import RagService
 
