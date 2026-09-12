@@ -126,6 +126,16 @@ curl -X POST https://your-backend.onrender.com/query \
 
 ---
 
+### Screenshot 
+### LogIn :
+<img width="1920" height="1080" alt="Login" src="https://github.com/user-attachments/assets/b80ed6ff-2499-42b8-ab76-86f60d7ea021" />
+
+### Upload A PDF :
+<img width="1920" height="1080" alt="Upload A PDF" src="https://github.com/user-attachments/assets/9e15fbf2-5551-49dc-99ee-650f7dd1b182" />
+
+### CHAT :
+<img width="1920" height="1080" alt="CHAT" src="https://github.com/user-attachments/assets/1f0f0f43-4e6e-49bb-96be-fa69d4885f86" />
+
 ## Known limitations
 
 - Gemini free tier enforces a daily request quota. Summary and fact extraction will return a fallback message when the quota is exhausted; chunk indexing and chat remain functional.
