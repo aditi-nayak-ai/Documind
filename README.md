@@ -135,6 +135,7 @@ curl -X POST https://your-backend.onrender.com/query \
 
 ### CHAT :
 <img width="1920" height="1080" alt="CHAT" src="https://github.com/user-attachments/assets/1f0f0f43-4e6e-49bb-96be-fa69d4885f86" />
+<img width="1920" height="1080" alt="Screenshot (365)" src="https://github.com/user-attachments/assets/9a50dd74-2fe0-43fd-aa3e-7e2beaeae0ca" />
 
 ## Known limitations
 
