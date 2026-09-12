@@ -258,6 +258,25 @@ def test_ingest_maps_quota_error_to_429(client, mocked_chat, auth_headers, monke
     assert response.status_code == 429
 
 
+def test_ingest_maps_transient_server_error_to_503(client, mocked_chat, auth_headers, monkeypatch):
+    """A 503 from Gemini (their infra overloaded, not your quota) must
+    surface as 503 to the client, not 429 -- the person retrying should
+    get an accurate reason, not a misleading "you're rate limited"."""
+    from app.chat_engine import TransientServerError
+
+    def raise_unavailable(texts):
+        raise TransientServerError(raw="503 UNAVAILABLE")
+
+    monkeypatch.setattr(mocked_chat, "_embed_batch", raise_unavailable)
+
+    response = client.post(
+        "/ingest",
+        files={"file": ("test.pdf", _minimal_pdf_bytes(), "application/pdf")},
+        headers=auth_headers,
+    )
+    assert response.status_code == 503
+
+
 def test_query_unknown_document_returns_404(client, mocked_chat, auth_headers):
     """The doc doesn't exist for this (or any) user, so the ownership
     check in the /query route itself returns 404 before chat.ask() is
