@@ -1,6 +1,6 @@
 from google.genai import errors as genai_errors
 
-from app.gemini_client import call_with_retry, classify_quota_error, get_client
+from app.gemini_client import call_with_retry, classify_gemini_error, get_client
 from app.logging_config import setup_logging
 
 logger = setup_logging("documind")
@@ -21,7 +21,11 @@ def embed_one(text: str) -> list:
             return response.embeddings[0].values
         except genai_errors.ClientError as e:
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                raise classify_quota_error(e)
+                raise classify_gemini_error(e)
+            raise
+        except genai_errors.ServerError as e:
+            if "503" in str(e) or "UNAVAILABLE" in str(e):
+                raise classify_gemini_error(e)
             raise
 
     return call_with_retry(call)
@@ -49,7 +53,11 @@ def embed_batch(texts: list) -> list:
             return response.embeddings
         except genai_errors.ClientError as e:
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                raise classify_quota_error(e)
+                raise classify_gemini_error(e)
+            raise
+        except genai_errors.ServerError as e:
+            if "503" in str(e) or "UNAVAILABLE" in str(e):
+                raise classify_gemini_error(e)
             raise
 
     embeddings = call_with_retry(call)
