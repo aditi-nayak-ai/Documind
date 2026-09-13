@@ -142,3 +142,4 @@ curl -X POST https://your-backend.onrender.com/query \
 - Gemini free tier enforces a daily request quota. Summary and fact extraction will return a fallback message when the quota is exhausted; chunk indexing and chat remain functional.
 - Render free tier spins down after 15 minutes of inactivity. First request after a cold start takes 30–60 seconds.
 - PDF text extraction requires selectable text. Scanned image-only PDFs will produce empty or partial results.
+
