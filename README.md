@@ -45,6 +45,7 @@ This isn't just a working script — it's built and verified the way a team proj
 - Structured JSON logging with per-request correlation IDs, plus `/health` (real DB connectivity check) and `/stats` (operational metrics) endpoints for observability
 
 ## Project structure
+```
 Documind/
 ├── backend/
 │ ├── app/
@@ -75,6 +76,7 @@ Documind/
 │ ├── FactsPanel.jsx
 │ └── ChatWindow.jsx
 └── vite.config.js
+```
 
 ## Local setup
 
