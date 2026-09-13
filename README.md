@@ -159,13 +159,14 @@ curl -X POST https://your-backend.onrender.com/query \
 ## Screenshots
 
 **Login**
-![Login](./screenshots/login.png)
+<img width="1920" height="1080" alt="Login" src="https://github.com/user-attachments/assets/c1b0f22a-bada-46c2-81aa-4303bce721e0" />
 
 **Upload a PDF**
-![Upload](./screenshots/upload.png)
+<img width="1920" height="1080" alt="Upload A PDF" src="https://github.com/user-attachments/assets/37829826-ec53-4037-bce2-39085170a52a" />
 
 **Chat**
-![Chat](./screenshots/chat.png)
+<img width="1920" height="1080" alt="CHAT" src="https://github.com/user-attachments/assets/ce905fac-298b-4869-a40b-87bf5e083f68" />
+
 
 ## Known limitations
 
