@@ -72,7 +72,7 @@ def decode_access_token(token: str) -> dict:
     return jwt.decode(token, _require_secret_key(), algorithms=[settings.jwt_algorithm])
  
  
-async def get_current_user(
+def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),  # noqa: B008 -- FastAPI's documented DI pattern
 ):
     """FastAPI dependency. Add `current_user=Depends(get_current_user)` to
