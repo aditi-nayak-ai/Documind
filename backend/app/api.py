@@ -125,7 +125,7 @@ class TokenResponse(BaseModel):
 
 @app.post("/auth/register", response_model=TokenResponse)
 @limiter.limit("5/minute")
-async def register(request: Request, body: RegisterRequest):
+def register(request: Request, body: RegisterRequest):
     if get_user_by_email(body.email):
         raise HTTPException(status_code=409, detail="An account with this email already exists.")
     user = create_user(body.email, hash_password(body.password))
@@ -135,7 +135,7 @@ async def register(request: Request, body: RegisterRequest):
 
 @app.post("/auth/login", response_model=TokenResponse)
 @limiter.limit("10/minute")
-async def login(request: Request, body: LoginRequest):
+def login(request: Request, body: LoginRequest):
     user = get_user_by_email(body.email)
     # Deliberately identical error for "no such email" and "wrong password"
     # -- distinguishing them lets an attacker enumerate registered emails.
@@ -146,7 +146,7 @@ async def login(request: Request, body: LoginRequest):
 
 
 @app.get("/auth/me")
-async def me(current_user=Depends(get_current_user)):  # noqa: B008 -- FastAPI's documented DI pattern, same rationale as File(...) elsewhere in this file
+def me(current_user=Depends(get_current_user)):  # noqa: B008 -- FastAPI's documented DI pattern, same rationale as File(...) elsewhere in this file
     return {"id": current_user["id"], "email": current_user["email"]}
 
 
@@ -185,7 +185,7 @@ UPLOAD_READ_CHUNK_BYTES = 1024 * 1024  # 1 MB
 
 @app.post("/ingest")
 @limiter.limit("5/minute")
-async def ingest_pdf(
+def ingest_pdf(
     request: Request,
     file: UploadFile = File(...),  # noqa: B008 -- File(...) as a default is FastAPI's documented dependency-injection pattern, not a mutable-default bug
     current_user=Depends(get_current_user),  # noqa: B008 -- FastAPI's documented DI pattern
@@ -209,7 +209,7 @@ async def ingest_pdf(
     # bounds memory use per request.
     buffer = bytearray()
     while True:
-        piece = await file.read(UPLOAD_READ_CHUNK_BYTES)
+        piece = file.file.read(UPLOAD_READ_CHUNK_BYTES)
         if not piece:
             break
         buffer.extend(piece)
@@ -270,7 +270,7 @@ async def ingest_pdf(
 
 @app.post("/query")
 @limiter.limit("15/minute")
-async def query(request: Request, body: QueryRequest, current_user=Depends(get_current_user)):  # noqa: B008 -- FastAPI's documented DI pattern
+def query(request: Request, body: QueryRequest, current_user=Depends(get_current_user)):  # noqa: B008 -- FastAPI's documented DI pattern
     # Ownership check happens here, once, before ask() ever touches
     # document_chunks -- see the docstring on database.search_chunks for
     # why that function itself doesn't re-check user_id.
