@@ -1,14 +1,14 @@
 import axios from "axios";
-
+ 
 export const BACKEND = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
-
+ 
 // One shared axios instance instead of each component calling axios
 // directly with its own BACKEND constant (the old pattern in
 // UploadZone.jsx / ChatWindow.jsx). Centralizing it here means the auth
 // header and the 401 handling below only have to be written once, and
 // every request automatically gets both.
 export const api = axios.create({ baseURL: BACKEND });
-
+ 
 // Attaches the current token to every outgoing request. Reading it fresh
 // from localStorage on each request (rather than capturing it once at
 // client-creation time) means a login/logout that happens after this
@@ -20,7 +20,7 @@ api.interceptors.request.use((config) => {
   }
   return config;
 });
-
+ 
 // A 401 here always means the same thing: the token is missing, expired,
 // or was forged/tampered with (see backend app/auth.py get_current_user --
 // it never returns any other status). There's no refresh-token flow (see
@@ -31,7 +31,7 @@ let onUnauthorized = () => {};
 export function setUnauthorizedHandler(fn) {
   onUnauthorized = fn;
 }
-
+ 
 api.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -42,3 +42,7 @@ api.interceptors.response.use(
     return Promise.reject(error);
   }
 );
+ 
+export async function deleteDocument(docId) {
+  await api.delete(`/document/${encodeURIComponent(docId)}`);
+}
