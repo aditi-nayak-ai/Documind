@@ -5,7 +5,8 @@ import FactsPanel from "./components/FactsPanel";
 import ChatWindow from "./components/ChatWindow";
 import AuthPage from "./components/AuthPage";
 import { useAuth } from "./AuthContext";
-
+import { deleteDocument } from "./api";
+ 
 const LogoIcon = () => (
   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
@@ -14,14 +15,14 @@ const LogoIcon = () => (
     <line x1="16" y1="17" x2="8" y2="17"/>
   </svg>
 );
-
+ 
 const PlusIcon = () => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     <line x1="12" y1="5" x2="12" y2="19"/>
     <line x1="5" y1="12" x2="19" y2="12"/>
   </svg>
 );
-
+ 
 const s = {
   app: { minHeight: "100vh", display: "flex", flexDirection: "column", background: "var(--bg)" },
   topbar: {
@@ -36,6 +37,12 @@ const s = {
   },
   brandText: { fontSize: "15px", fontWeight: 600, color: "var(--text-primary)", letterSpacing: "-0.2px" },
   brandAccent: { color: "var(--accent)" },
+  deleteBtn: {
+    fontSize: "12px", color: "var(--danger-text)", background: "transparent",
+    border: "1px solid var(--border-mid)", borderRadius: "var(--radius-sm)",
+    padding: "6px 12px", cursor: "pointer", fontFamily: "inherit",
+  },
+  deleteError: { fontSize: "12px", color: "var(--danger-text)" },
   newDocBtn: {
     display: "flex", alignItems: "center", gap: "6px", fontSize: "12px",
     color: "var(--text-secondary)", background: "var(--bg-hover)",
@@ -69,25 +76,48 @@ const s = {
   indexDot: { width: "6px", height: "6px", borderRadius: "50%", background: "var(--success-text)", flexShrink: 0 },
   indexText: { fontSize: "11px", color: "var(--text-muted)" },
 };
-
+ 
 export default function App() {
   const { isAuthenticated, checkingSession, user, logout } = useAuth();
   const [docData, setDocData] = useState(null);
-
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+ 
+  // Permanent: removes the document and every stored chunk on the server.
+  // "New document" below only clears the screen and keeps the data, so an
+  // accidental click there costs nothing.
+  const handleDelete = async () => {
+    if (!window.confirm(`Delete "${docData.filename}" and all of its indexed data? This cannot be undone.`)) return;
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await deleteDocument(docData.doc_id);
+      setDocData(null);
+    } catch (err) {
+      if (err.response?.status === 404) {
+        setDocData(null); // already gone -- same end state the user wanted
+      } else {
+        setDeleteError(err.response?.data?.detail || "Could not delete the document. Please try again.");
+      }
+    } finally {
+      setDeleting(false);
+    }
+  };
+ 
   // Avoids a flash of the login screen while a stored token is still
   // being validated against /auth/me on first load (see AuthContext.jsx).
   if (checkingSession) {
     return <div style={s.centeredLoading}>Loading…</div>;
   }
-
+ 
   if (!isAuthenticated) {
     return <AuthPage />;
   }
-
+ 
   if (!docData) {
     return <UploadZone onUploadSuccess={setDocData} />;
   }
-
+ 
   return (
     <div style={s.app}>
       <div style={s.topbar}>
@@ -97,21 +127,35 @@ export default function App() {
         </div>
         <div style={s.topbarRight}>
           {user?.email && <span style={s.userEmail}>{user.email}</span>}
-          <button style={s.newDocBtn} onClick={() => setDocData(null)}>
+          {deleteError && <span style={s.deleteError}>{deleteError}</span>}
+          <button style={s.deleteBtn} onClick={handleDelete} disabled={deleting}>
+            {deleting ? "Deleting…" : "Delete document"}
+          </button>
+          <button
+            style={s.newDocBtn}
+            onClick={() => setDocData(null)}
+            title="Start over with another file. Your current document stays saved."
+          >
             <PlusIcon /> New document
           </button>
           <button style={s.logoutBtn} onClick={logout}>Log out</button>
         </div>
       </div>
-
+ 
       <div style={s.body}>
         <div style={s.sidebar}>
-          <SummaryPanel summary={docData.summary} filename={docData.filename} />
+          <SummaryPanel
+            summary={docData.summary}
+            filename={docData.filename}
+            summaryFailed={docData.summary_failed}
+            partial={docData.partial}
+            reused={docData.reused}
+          />
           <div style={s.indexPill}>
             <div style={s.indexDot} />
             <span style={s.indexText}>{docData.chunks} chunks indexed · pgvector</span>
           </div>
-          <FactsPanel facts={docData.facts} />
+          <FactsPanel facts={docData.facts} failed={docData.facts_failed} />
         </div>
         <ChatWindow docId={docData.doc_id} />
       </div>
