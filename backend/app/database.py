@@ -235,6 +235,66 @@ def insert_chunk(content: str, embedding: list, doc_id: str):
         conn.commit()
  
  
+def insert_chunks(chunks: list, embeddings: list, doc_id: str) -> None:
+    """Insert many chunks in ONE transaction: every row commits together
+    or none do. Replaces calling insert_chunk() in a loop, which opened a
+    connection and committed once per chunk (~12 ms each locally, plus a
+    network round trip per chunk against a hosted database) and could
+    leave half a batch behind if it failed midway."""
+    if len(chunks) != len(embeddings):
+        raise ValueError("chunks and embeddings must be the same length")
+    if not chunks:
+        return
+    rows = [
+        {
+            "content": chunk,
+            "embedding": "[" + ",".join(map(str, embedding)) + "]",
+            "document_name": doc_id,
+        }
+        for chunk, embedding in zip(chunks, embeddings)
+    ]
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO document_chunks (content, embedding, document_name)
+                VALUES (:content, :embedding, :document_name)
+            """),
+            rows,
+        )
+ 
+ 
+def delete_chunks(doc_id: str) -> int:
+    """Remove every chunk stored under doc_id and return how many were
+    deleted. Used to roll back a failed ingest: the doc_id was generated
+    moments ago for this request, so there is no documents row to keep."""
+    with get_engine().begin() as conn:
+        result = conn.execute(
+            text("DELETE FROM document_chunks WHERE document_name = :document_name"),
+            {"document_name": doc_id},
+        )
+        return result.rowcount
+ 
+ 
+def delete_document(doc_id: str, user_id: int) -> bool:
+    """Delete a document and its chunks, but only if user_id owns it.
+    Returns False -- and deletes nothing -- when the document does not
+    exist or belongs to someone else, so callers can answer 404 for both
+    cases without revealing which one it was. The ownership check and both
+    deletes run in a single transaction."""
+    with get_engine().begin() as conn:
+        owned = conn.execute(
+            text("DELETE FROM documents WHERE doc_id = :doc_id AND user_id = :user_id RETURNING doc_id"),
+            {"doc_id": doc_id, "user_id": user_id},
+        ).fetchone()
+        if not owned:
+            return False
+        conn.execute(
+            text("DELETE FROM document_chunks WHERE document_name = :document_name"),
+            {"document_name": doc_id},
+        )
+        return True
+ 
+ 
 def search_chunks(query_embedding: list, doc_id: str, top_k: int = 3) -> list:
     """No user_id filter here by design: doc_id is an unguessable UUID,
     and every caller (RagService.ask, via the /query route) is required
