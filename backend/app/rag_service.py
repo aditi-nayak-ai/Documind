@@ -1,18 +1,23 @@
 import hashlib
 import json
+import logging
 import uuid
-
+ 
 from app import embeddings, llm, pdf_extraction
 from app.database import (
+    delete_chunks,
+    delete_document,
     get_document,
     get_document_by_hash,
-    insert_chunk,
+    insert_chunks,
     save_document,
     search_chunks,
 )
 from app.exceptions import QuotaError, RetryableGeminiError
 from app.gemini_client import call_with_retry, classify_quota_error, get_client
-
+ 
+logger = logging.getLogger("documind")
+ 
 # Summary/facts are generated from a prefix of the document, not the whole
 # thing — gemini-3.6-flash's context window could fit far more, but keeping
 # this bounded controls latency/cost per upload. 15,000 chars covers most
@@ -22,20 +27,20 @@ from app.gemini_client import call_with_retry, classify_quota_error, get_client
 # exceeds this, load_pdf() now says so explicitly in the summary text and
 # in a `summary_truncated` flag, instead of staying quiet about it.
 SUMMARY_CONTEXT_CHARS = 15000
-
+ 
 # Prefixes used both to *produce* the fallback text when generation fails
 # (below) and to *recognize* it later, on a subsequent upload of the same
 # file, so a quota failure isn't cached as gospel forever -- see
 # _summary_or_facts_unavailable().
 _SUMMARY_FAILURE_PREFIX = "Summary unavailable"
 _FACTS_FAILURE_PREFIX = "Key facts unavailable"
-
-
+ 
+ 
 class RagService:
     """Orchestrates ingestion (extract -> chunk -> embed -> store ->
     summarize) and querying (embed question -> retrieve -> generate
     answer).
-
+ 
     The `_embed`, `_embed_batch`, `_generate`, and `_chunk_text` methods
     below are thin wrappers over the module-level functions in
     embeddings.py/llm.py/pdf_extraction.py. load_pdf() and ask() call
@@ -46,28 +51,28 @@ class RagService:
     imported. Calling the module functions directly from load_pdf/ask
     would bypass any such per-instance override silently.
     """
-
+ 
     def __init__(self):
         self.client = get_client()
-
+ 
     def _classify_quota_error(self, e) -> QuotaError:
         return classify_quota_error(e)
-
+ 
     def _call_with_retry(self, fn, max_attempts: int = 3):
         return call_with_retry(fn, max_attempts)
-
+ 
     def _embed(self, text: str) -> list:
         return embeddings.embed_one(text)
-
+ 
     def _embed_batch(self, texts: list) -> list:
         return embeddings.embed_batch(texts)
-
+ 
     def _chunk_text(self, text: str, chunk_size: int = 500, overlap: int = 80) -> list:
         return pdf_extraction.chunk_text(text, chunk_size, overlap)
-
+ 
     def _generate(self, prompt: str) -> str:
         return llm.generate(prompt)
-
+ 
     @staticmethod
     def _summary_or_facts_unavailable(summary: str, facts) -> bool:
         """True if a previous attempt's summary and/or facts are actually
@@ -92,7 +97,7 @@ class RagService:
             isinstance(f, str) and f.startswith(_FACTS_FAILURE_PREFIX) for f in facts
         )
         return summary_failed or facts_failed
-
+ 
     def _generate_summary_and_facts(self, full_text: str) -> tuple[str, list, bool]:
         """Shared by both a fresh ingest and a retry-on-reuse (see
         load_pdf below) -- the actual Gemini calls and their
@@ -100,7 +105,7 @@ class RagService:
         of being duplicated between the two call sites."""
         doc_truncated = len(full_text) > SUMMARY_CONTEXT_CHARS
         text_for_summary = full_text[:SUMMARY_CONTEXT_CHARS]
-
+ 
         try:
             summary = self._generate(
                 "Summarize this document in 3-4 sentences. Be concise and clear.\n\n"
@@ -122,7 +127,7 @@ class RagService:
             # since "try again later today" isn't the right framing for
             # "Google's servers were briefly overloaded."
             summary = f"{_SUMMARY_FAILURE_PREFIX} — Gemini's servers are temporarily overloaded. Please try again shortly."
-
+ 
         facts_raw = None
         try:
             facts_raw = self._generate(
@@ -147,12 +152,13 @@ class RagService:
             facts = [facts_raw] if facts_raw is not None else [
                 f"{_FACTS_FAILURE_PREFIX} — an unexpected error occurred during extraction."
             ]
-
+ 
         return summary, facts, doc_truncated
-
+ 
     def load_pdf(self, contents: bytes, filename: str, force_reingest: bool = False, user_id: int | None = None) -> dict:
         content_hash = hashlib.sha256(contents).hexdigest()
-
+ 
+        existing = None
         if not force_reingest:
             existing = get_document_by_hash(content_hash, user_id)
             if existing and not existing.get("partial"):
@@ -180,20 +186,50 @@ class RagService:
                     "reused": True,
                     "summary_truncated": doc_truncated,
                 }
-
+ 
+        # A previous upload of this exact file that only got partway through
+        # indexing. It is superseded by this attempt, but is deleted only
+        # AFTER this attempt succeeds, so a failed retry never leaves the
+        # user with nothing.
+        stale_partial = existing if existing and existing.get("partial") else None
+ 
         full_text = pdf_extraction.extract_text(contents)
-
+ 
         doc_id = str(uuid.uuid4())
         chunks = self._chunk_text(full_text)
-
+ 
+        try:
+            result = self._ingest_new(doc_id, filename, content_hash, full_text, chunks, user_id)
+        except Exception:
+            # Any failure that is not the deliberate "partial" outcome
+            # handled inside _ingest_new: remove whatever chunks were
+            # already written so they don't sit orphaned with no documents
+            # row pointing at them. Cleanup is best-effort -- it must never
+            # hide the original error.
+            try:
+                removed = delete_chunks(doc_id)
+                logger.warning("ingest failed; rolled back %d chunks", removed, extra={"doc_id": doc_id})
+            except Exception:
+                logger.exception("rollback of chunks failed", extra={"doc_id": doc_id})
+            raise
+ 
+        if stale_partial and (not result.get("partial") or result["chunks"] >= stale_partial.get("chunk_count", 0)):
+            try:
+                delete_document(stale_partial["doc_id"], user_id)
+            except Exception:
+                logger.exception("could not delete superseded partial document",
+                                 extra={"doc_id": stale_partial["doc_id"]})
+        return result
+ 
+    def _ingest_new(self, doc_id: str, filename: str, content_hash: str, full_text: str,
+                    chunks: list, user_id: int | None) -> dict:
         embedded_count = 0
         try:
             for batch_start in range(0, len(chunks), embeddings.EMBED_BATCH_SIZE):
                 batch = chunks[batch_start:batch_start + embeddings.EMBED_BATCH_SIZE]
                 batch_embeddings = self._embed_batch(batch)
-                for chunk, embedding in zip(batch, batch_embeddings):
-                    insert_chunk(chunk, embedding, doc_id)
-                    embedded_count += 1
+                insert_chunks(batch, batch_embeddings, doc_id)
+                embedded_count += len(batch)
         except RetryableGeminiError:
             if embedded_count == 0:
                 raise
@@ -214,9 +250,9 @@ class RagService:
                 "reused": False,
                 "partial": True,
             }
-
+ 
         summary, facts, doc_truncated = self._generate_summary_and_facts(full_text)
-
+ 
         save_document(doc_id, filename, content_hash, summary, json.dumps(facts),
                       chunk_count=len(chunks), is_partial=False, user_id=user_id)
         return {
@@ -228,7 +264,12 @@ class RagService:
             "reused": False,
             "summary_truncated": doc_truncated,
         }
-
+ 
+    def delete_document(self, doc_id: str, user_id: int) -> bool:
+        """Delete one of the caller's documents and its chunks. False means
+        not found or not owned (deliberately indistinguishable)."""
+        return delete_document(doc_id, user_id)
+ 
     def ask(self, question: str, doc_id: str) -> str:
         query_embedding = self._embed(question)
         relevant_chunks = search_chunks(query_embedding, doc_id, top_k=3)
@@ -242,6 +283,6 @@ class RagService:
             "Question: " + question + "\n\nAnswer:"
         )
         return self._generate(prompt)
-
+ 
     def get_document_info(self, doc_id: str, user_id: int) -> dict:
         return get_document(doc_id, user_id)
