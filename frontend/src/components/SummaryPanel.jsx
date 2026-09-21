@@ -1,4 +1,3 @@
-
 import { indexStatus } from "../docStatus";
  
 // `summaryFailed` and `partial` come from the backend as explicit flags.
