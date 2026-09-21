@@ -91,14 +91,13 @@ def test_non_retryable_error_midway_rolls_back_every_chunk(engine, monkeypatch, 
     assert _count_documents() == 0
  
  
-def test_error_after_all_chunks_stored_still_rolls_back(engine, monkeypatch, test_user):
-    # Every chunk embeds fine, then summary generation blows up with an
-    # error the summary code does not handle. Before Step 2 this left the
-    # whole document's chunks orphaned.
-    def boom(prompt):
-        raise RuntimeError("unexpected model error")
+def test_failure_after_all_chunks_stored_still_rolls_back(engine, monkeypatch, test_user):
+    # Every chunk embeds and is stored, then saving the documents row fails.
+    # Before Step 2 this left the whole document's chunks orphaned.
+    def boom(*args, **kwargs):
+        raise RuntimeError("database write failed")
  
-    monkeypatch.setattr(engine, "_generate", boom)
+    monkeypatch.setattr("app.rag_service.save_document", boom)
     with pytest.raises(RuntimeError):
         engine.load_pdf(b"file-a", "a.pdf", user_id=test_user["id"])
     assert _count_chunks() == 0
