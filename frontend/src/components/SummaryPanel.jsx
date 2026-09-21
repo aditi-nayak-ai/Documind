@@ -1,8 +1,18 @@
-const isQuotaMessage = (text) =>
-  text?.toLowerCase().includes("quota");
+
+import { indexStatus } from "../docStatus";
  
-export default function SummaryPanel({ summary, filename }) {
-  const quota = isQuotaMessage(summary);
+// `summaryFailed` and `partial` come from the backend as explicit flags.
+// This component used to guess "failure" by searching the summary text for
+// the word "quota", which hid the real summary of any document that merely
+// talked about quotas.
+export default function SummaryPanel({
+  summary,
+  filename,
+  summaryFailed = false,
+  partial = false,
+  reused = false,
+}) {
+  const status = indexStatus({ partial, reused });
  
   const s = {
     section: {
@@ -42,7 +52,7 @@ export default function SummaryPanel({ summary, filename }) {
     },
     fileMeta: {
       fontSize: "11px",
-      color: "var(--text-muted)",
+      color: status.tone === "warn" ? "var(--warning-text)" : "var(--text-muted)",
       marginTop: "2px",
     },
     body: {
@@ -73,17 +83,23 @@ export default function SummaryPanel({ summary, filename }) {
         </div>
         <div>
           <p style={s.fileName}>{filename}</p>
-          <p style={s.fileMeta}>Indexed successfully</p>
+          <p style={s.fileMeta}>{status.label}</p>
         </div>
       </div>
  
-      {quota && (
+      {partial && (
         <div style={s.quotaBox}>
-          <strong style={{ fontWeight: 600 }}>Gemini quota reached.</strong> Your document is indexed and chat is ready. Summary and key facts will appear once the daily quota resets.
+          {summary} Upload the same file again to finish indexing.
         </div>
       )}
  
-      {!quota && (
+      {!partial && summaryFailed && (
+        <div style={s.quotaBox}>
+          {summary} Your document is indexed and chat is ready — upload the same file again to retry the summary.
+        </div>
+      )}
+ 
+      {!partial && !summaryFailed && (
         <div style={s.section}>
           <p style={s.label}>Summary</p>
           <p style={s.body}>{summary}</p>
@@ -92,4 +108,3 @@ export default function SummaryPanel({ summary, filename }) {
     </>
   );
 }
- 
