@@ -1,4 +1,4 @@
-import json
+
 import time
 import traceback
 import uuid
@@ -29,6 +29,7 @@ from app.database import (
 )
 from app.logging_config import request_id_ctx, setup_logging
 from app.metrics import metrics
+from app.rag_service import failure_flags, normalize_facts
  
 logger = setup_logging("documind")
  
@@ -248,6 +249,8 @@ def ingest_pdf(
  
     reused = result.get("reused", False)
     partial = result.get("partial", False)
+    facts = normalize_facts(result["facts"])
+    summary_failed, facts_failed = failure_flags(result["summary"], facts)
     if reused:
         message = "Document already indexed — reused existing data."
     elif partial:
@@ -260,11 +263,13 @@ def ingest_pdf(
         "doc_id": result["doc_id"],
         "filename": result["filename"],
         "summary": result["summary"],
-        "facts": result["facts"] if isinstance(result["facts"], list) else json.loads(result["facts"]),
+        "facts": facts,
         "chunks": result.get("chunks", result.get("chunk_count", 0)),
         "reused": reused,
         "partial": partial,
         "summary_truncated": result.get("summary_truncated", False),
+        "summary_failed": summary_failed,
+        "facts_failed": facts_failed,
     }
  
  
@@ -305,7 +310,8 @@ def get_document_route(request: Request, doc_id: str, current_user=Depends(get_c
     doc = chat.get_document_info(doc_id, current_user["id"])
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
-    doc["facts"] = json.loads(doc["facts"])
+    doc["summary_failed"], doc["facts_failed"] = failure_flags(doc["summary"], doc["facts"])
+    doc["facts"] = normalize_facts(doc["facts"])
     return doc
  
  
