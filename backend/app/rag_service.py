@@ -36,6 +36,59 @@ _SUMMARY_FAILURE_PREFIX = "Summary unavailable"
 _FACTS_FAILURE_PREFIX = "Key facts unavailable"
  
  
+def normalize_facts(value) -> list[str]:
+    """Coerce whatever we were given -- a list, a JSON string, a dict, None,
+    or a list holding numbers/objects -- into a clean list of non-empty
+    strings. LLM output and old database rows are not guaranteed to have
+    the shape we asked for, and everything downstream (the API response,
+    the React list) assumes a list of strings."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        try:
+            parsed = json.loads(stripped)
+        except (ValueError, TypeError):
+            return [stripped]  # legacy row: plain text that was never JSON
+        if isinstance(parsed, str):
+            return [parsed.strip()] if parsed.strip() else []
+        return normalize_facts(parsed)
+    if isinstance(value, dict):
+        # {"facts": [...]} -> use the inner list; otherwise use the values.
+        value = next(iter(value.values())) if len(value) == 1 and isinstance(next(iter(value.values())), list) \
+            else list(value.values())
+    if not isinstance(value, list):
+        return []
+    facts = []
+    for item in value:
+        if isinstance(item, str):
+            text = item.strip()
+        elif isinstance(item, bool):
+            continue
+        elif isinstance(item, (int, float)):
+            text = str(item)
+        elif isinstance(item, dict):
+            text = "; ".join(f"{k}: {v}" for k, v in item.items() if v not in (None, ""))
+        else:
+            continue
+        if text:
+            facts.append(text)
+    return facts
+ 
+ 
+def failure_flags(summary, facts) -> tuple[bool, bool]:
+    """(summary_failed, facts_failed): True when the stored text is one of
+    OUR fallback messages rather than real generated content. Matches the
+    exact prefix we wrote, never a substring of the text -- a genuine
+    summary of a report about sales quotas must not be mistaken for a
+    quota failure."""
+    summary_failed = (summary or "").startswith(_SUMMARY_FAILURE_PREFIX)
+    facts_failed = any(f.startswith(_FACTS_FAILURE_PREFIX) for f in normalize_facts(facts))
+    return summary_failed, facts_failed
+ 
+ 
 class RagService:
     """Orchestrates ingestion (extract -> chunk -> embed -> store ->
     summarize) and querying (embed question -> retrieve -> generate
@@ -86,17 +139,7 @@ class RagService:
         since the chunks themselves indexed fine and the file looks
         "already done" by content hash.
         """
-        if isinstance(facts, str):
-            try:
-                facts = json.loads(facts)
-            except (ValueError, TypeError):
-                facts = []
-        facts = facts or []
-        summary_failed = (summary or "").startswith(_SUMMARY_FAILURE_PREFIX)
-        facts_failed = any(
-            isinstance(f, str) and f.startswith(_FACTS_FAILURE_PREFIX) for f in facts
-        )
-        return summary_failed or facts_failed
+        return any(failure_flags(summary, facts))
  
     def _generate_summary_and_facts(self, full_text: str) -> tuple[str, list, bool]:
         """Shared by both a fresh ingest and a retry-on-reuse (see
@@ -111,6 +154,8 @@ class RagService:
                 "Summarize this document in 3-4 sentences. Be concise and clear.\n\n"
                 "Document:\n" + text_for_summary + "\n\nSummary:"
             )
+            if not isinstance(summary, str) or not summary.strip():
+                raise ValueError("model returned an empty summary")
             if doc_truncated:
                 summary += (
                     f" (Note: this summary and the facts below are based on the first "
@@ -127,6 +172,12 @@ class RagService:
             # since "try again later today" isn't the right framing for
             # "Google's servers were briefly overloaded."
             summary = f"{_SUMMARY_FAILURE_PREFIX} — Gemini's servers are temporarily overloaded. Please try again shortly."
+        except Exception:
+            # The chunks are already embedded and stored, so any other
+            # failure here degrades to a retryable fallback message (see
+            # load_pdf's reuse path) instead of throwing that work away.
+            logger.exception("summary generation failed")
+            summary = f"{_SUMMARY_FAILURE_PREFIX} — an unexpected error occurred while summarizing. Please try again."
  
         facts_raw = None
         try:
@@ -136,22 +187,22 @@ class RagService:
                 "Return ONLY the JSON array, nothing else.\n\n"
                 "Document:\n" + text_for_summary + "\n\nFacts:"
             )
-            facts_clean = facts_raw.strip().replace("```json", "").replace("```", "").strip()
-            facts = json.loads(facts_clean)
+            facts_clean = (facts_raw or "").strip().replace("```json", "").replace("```", "").strip()
+            facts = normalize_facts(json.loads(facts_clean))
+            if not facts:
+                facts = [f"{_FACTS_FAILURE_PREFIX} — the model returned no usable facts. Please try again."]
         except QuotaError as e:
             wait_note = "Please wait a minute and try again." if not e.is_daily else "Quota resets daily — try again later."
             facts = [f"{_FACTS_FAILURE_PREFIX} — Gemini quota limit reached. {wait_note}"]
         except RetryableGeminiError:
             facts = [f"{_FACTS_FAILURE_PREFIX} — Gemini's servers are temporarily overloaded. Please try again shortly."]
-        except Exception:  # noqa: BLE001 -- deliberately broad: covers both a raised ClientError/timeout from self._generate() and a JSONDecodeError from a malformed response, so fact extraction degrades gracefully either way
-            # facts_raw may be None here — e.g. self._generate() itself
-            # raised before returning anything (a non-quota ClientError,
-            # timeout, etc.) — or it may hold text that just failed to
-            # parse as JSON. Handle both instead of assuming facts_raw
-            # was always successfully assigned before this branch runs.
-            facts = [facts_raw] if facts_raw is not None else [
-                f"{_FACTS_FAILURE_PREFIX} — an unexpected error occurred during extraction."
-            ]
+        except Exception:
+            # Covers a raised ClientError/timeout from self._generate() AND
+            # text that failed to parse as JSON. Never store the raw model
+            # output as if it were a fact: it would not be flagged as a
+            # failure, so it would never be retried on re-upload.
+            logger.exception("fact extraction failed")
+            facts = [f"{_FACTS_FAILURE_PREFIX} — an unexpected error occurred during extraction."]
  
         return summary, facts, doc_truncated
  
@@ -238,7 +289,7 @@ class RagService:
                 "Gemini was temporarily unavailable mid-upload. Chat will only search "
                 "the indexed portion until you re-upload."
             )
-            facts = [f"{_FACTS_FAILURE_PREFIX} — quota limit reached during indexing."]
+            facts = [f"{_FACTS_FAILURE_PREFIX} — indexing was interrupted before the whole document was processed."]
             save_document(doc_id, filename, content_hash, summary, json.dumps(facts),
                           chunk_count=embedded_count, is_partial=True, user_id=user_id)
             return {
