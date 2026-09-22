@@ -1,3 +1,8 @@
+"""Unit tests for ChatEngine._chunk_text.
+ 
+Pure logic, no DB/network involved -- these should run in milliseconds.
+"""
+ 
 import pytest
  
  
