@@ -1,8 +1,10 @@
-const isQuotaFact = (facts) =>
-  facts?.length === 1 && facts[0]?.toLowerCase().includes("quota");
+import { toFactList } from "../docStatus";
  
-export default function FactsPanel({ facts }) {
-  const quota = isQuotaFact(facts);
+// `failed` is an explicit flag from the backend. Previously a single fact
+// containing the word "quota" was treated as a failure and replaced with a
+// hard-coded message, and a non-array `facts` crashed the whole page.
+export default function FactsPanel({ facts, failed = false }) {
+  const list = toFactList(facts);
  
   const s = {
     section: {
@@ -37,7 +39,7 @@ export default function FactsPanel({ facts }) {
       marginTop: "7px",
       flexShrink: 0,
     },
-    quotaText: {
+    note: {
       fontSize: "13px",
       color: "var(--text-muted)",
       fontStyle: "italic",
@@ -47,11 +49,13 @@ export default function FactsPanel({ facts }) {
   return (
     <div style={s.section}>
       <p style={s.label}>Key facts</p>
-      {quota ? (
-        <p style={s.quotaText}>Unavailable — quota limit reached.</p>
+      {failed ? (
+        <p style={s.note}>{list[0] || "Key facts are unavailable."}</p>
+      ) : list.length === 0 ? (
+        <p style={s.note}>No key facts were extracted.</p>
       ) : (
         <ul style={s.list}>
-          {facts.map((fact, i) => (
+          {list.map((fact, i) => (
             <li key={i} style={s.item}>
               <span style={s.dot} />
               <span>{fact}</span>
