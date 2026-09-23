@@ -1,4 +1,3 @@
-
 import time
 import traceback
 import uuid
@@ -13,16 +12,19 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
  
 from app.auth import (
+    _DUMMY_PASSWORD_HASH,
     create_access_token,
     get_current_user,
     hash_password,
+    normalize_email,
     verify_password,
 )
 from app.chat_engine import ChatEngine, QuotaError, TransientServerError
-from app.config import settings
+from app.config import settings, validate_settings_or_raise
 from app.database import (
     check_connection,
     create_user,
+    get_ingest_count,
     get_user_by_email,
     increment_user_usage,
     init_db,
@@ -36,6 +38,7 @@ logger = setup_logging("documind")
  
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    validate_settings_or_raise()  # e.g. a missing/too-short JWT secret -- fail at startup, not at the first login
     init_db()
     yield
  
@@ -127,9 +130,10 @@ class TokenResponse(BaseModel):
 @app.post("/auth/register", response_model=TokenResponse)
 @limiter.limit("5/minute")
 def register(request: Request, body: RegisterRequest):
-    if get_user_by_email(body.email):
+    email = normalize_email(body.email)
+    if get_user_by_email(email):
         raise HTTPException(status_code=409, detail="An account with this email already exists.")
-    user = create_user(body.email, hash_password(body.password))
+    user = create_user(email, hash_password(body.password))
     token = create_access_token(user["id"], user["email"])
     return TokenResponse(access_token=token)
  
@@ -137,10 +141,17 @@ def register(request: Request, body: RegisterRequest):
 @app.post("/auth/login", response_model=TokenResponse)
 @limiter.limit("10/minute")
 def login(request: Request, body: LoginRequest):
-    user = get_user_by_email(body.email)
-    # Deliberately identical error for "no such email" and "wrong password"
-    # -- distinguishing them lets an attacker enumerate registered emails.
-    if not user or not verify_password(body.password, user["password_hash"]):
+    user = get_user_by_email(normalize_email(body.email))
+    # Identical error for "no such email" and "wrong password" -- AND now
+    # identical timing too. verify_password() (bcrypt) always runs, even
+    # for an unknown email, against a dummy hash. Previously `not user or
+    # not verify_password(...)` short-circuited on `or` and skipped the
+    # (deliberately slow) bcrypt call entirely for unknown emails, which
+    # made that response measurably faster and let an attacker enumerate
+    # registered emails by timing alone, despite the identical error text.
+    password_hash = user["password_hash"] if user else _DUMMY_PASSWORD_HASH
+    password_ok = verify_password(body.password, password_hash)
+    if not user or not password_ok:
         raise HTTPException(status_code=401, detail="Incorrect email or password.")
     token = create_access_token(user["id"], user["email"])
     return TokenResponse(access_token=token)
@@ -194,6 +205,18 @@ def ingest_pdf(
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files accepted.")
  
+    # A lifetime cap independent of any IP-based rate limiting. slowapi's
+    # 5/minute limit above only throttles a burst; it does nothing to stop
+    # one account slowly draining the shared Gemini quota over hours or
+    # days, and it keys on the request's IP, which is not fully trustworthy
+    # here (see app/auth.py's docstring on Render's X-Forwarded-For
+    # behavior). user_id comes from a verified JWT and can't be spoofed.
+    if get_ingest_count(current_user["id"]) >= settings.max_ingests_per_user:
+        raise HTTPException(
+            status_code=429,
+            detail=f"You've reached the limit of {settings.max_ingests_per_user} document uploads for this account.",
+        )
+ 
     # Fast path: reject up front if the client told the truth about size.
     declared_size = request.headers.get("content-length")
     if declared_size and int(declared_size) > MAX_UPLOAD_BYTES:
@@ -237,11 +260,12 @@ def ingest_pdf(
         raise HTTPException(status_code=503, detail="Gemini's servers are temporarily overloaded. Please try again shortly.")
     except Exception as e:  # noqa: BLE001 -- deliberate top-level boundary: any unexpected failure here still needs to become a clean 500 instead of an unhandled crash
         metrics.increment("ingests_failed_total")
-        # Log the full traceback server-side so Render's logs show the real
-        # cause — previously only "500 Internal Server Error" showed up
-        # with nothing to debug from. The client still just gets str(e).
+        # Full detail goes to the server log only. The client used to get
+        # f"Unexpected error: {e!s}" verbatim -- a corrupt PDF or a pypdf
+        # internals error could leak file paths, library internals, or
+        # other implementation detail to whoever uploaded the file.
         logger.error("Unexpected error in /ingest", extra={"error": str(e), "traceback": traceback.format_exc()})
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {e!s}")
+        raise HTTPException(status_code=500, detail="Something went wrong while processing this file. Please try again.")
  
     metrics.increment("ingests_total")
     metrics.record_duration("ingest_ms", round((time.monotonic() - ingest_start) * 1000, 1))
