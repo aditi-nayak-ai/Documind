@@ -1,4 +1,3 @@
-
 """Stateless JWT auth.
  
 Deliberately simple: bcrypt password hashing, a signed JWT carrying the
