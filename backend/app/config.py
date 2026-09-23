@@ -1,6 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
- 
- 
+  
 class Settings(BaseSettings):
     """Centralized, typed configuration.
  
@@ -28,6 +27,35 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60 * 24 * 7
  
+    # Coarse per-user cap on total ingests, independent of any IP-based
+    # rate limiting (see app/auth.py's note on why IP alone isn't
+    # trustworthy on Render). This is a lifetime total, not a rolling
+    # daily window -- user_usage.updated_at is overwritten on every
+    # increment, so a true daily reset would need a separate counter
+    # reset on a schedule. A lifetime cap still bounds the worst case: no
+    # single account can keep draining the shared Gemini quota forever.
+    max_ingests_per_user: int = 200
+ 
  
 settings = Settings()
  
+ 
+def validate_settings_or_raise() -> None:
+    """Called once at process startup (see api.py's lifespan). Fails
+    loudly and immediately if the deployment is misconfigured, instead of
+    starting successfully and only failing -- with a confusing 500 -- at
+    the first login or token check. A 1-byte JWT_SECRET_KEY used to pass
+    silently; jwt.encode would sign with it, and nothing caught how weak
+    it was until someone thought to check.
+    """
+    if not settings.jwt_secret_key:
+        raise RuntimeError(
+            "JWT_SECRET_KEY is not set. Generate one with: "
+            'python -c "import secrets; print(secrets.token_hex(32))" '
+            "and set it as an environment variable before starting the server."
+        )
+    if len(settings.jwt_secret_key.encode("utf-8")) < 32:
+        raise RuntimeError(
+            "JWT_SECRET_KEY is too short (must be at least 32 bytes for HS256). "
+            'Generate one with: python -c "import secrets; print(secrets.token_hex(32))"'
+        )
