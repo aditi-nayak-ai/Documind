@@ -202,6 +202,19 @@ def get_user_by_id(user_id: int) -> dict:
         return None
  
  
+def get_ingest_count(user_id: int) -> int:
+    """Total ingests this user has ever run. Used to enforce
+    settings.max_ingests_per_user -- a cap independent of any IP-based
+    rate limiting, so it still holds even if X-Forwarded-For is spoofed
+    (see app/auth.py's note on Render's header behavior being disputed)."""
+    with get_engine().connect() as conn:
+        result = conn.execute(
+            text("SELECT ingests_count FROM user_usage WHERE user_id = :user_id"),
+            {"user_id": user_id},
+        ).fetchone()
+        return result[0] if result else 0
+ 
+ 
 def increment_user_usage(user_id: int, kind: str) -> None:
     """kind is 'ingests' or 'queries'. Upserts so this is safe even if a
     user row predates the user_usage table (shouldn't happen post-init_db,
