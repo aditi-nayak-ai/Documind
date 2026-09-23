@@ -1,3 +1,4 @@
+
 """Stateless JWT auth.
  
 Deliberately simple: bcrypt password hashing, a signed JWT carrying the
@@ -51,6 +52,27 @@ def hash_password(password: str) -> str:
  
 def verify_password(password: str, password_hash: str) -> bool:
     return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+ 
+ 
+# A real bcrypt hash of an arbitrary fixed string, used only to give
+# login() something to hash-and-compare against when the email doesn't
+# exist. bcrypt is deliberately slow (that's what makes it useful against
+# offline cracking), so skipping it for unknown emails -- as `not user or
+# not verify_password(...)` used to do, since `or` short-circuits -- made
+# an unknown-email response measurably faster than a wrong-password one.
+# That timing gap is enough to enumerate which emails are registered, even
+# though the error text is identical either way. Comparing against this
+# constant keeps both cases doing the same bcrypt work.
+_DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"not-a-real-password-just-for-timing", bcrypt.gensalt()).decode("utf-8")
+ 
+ 
+def normalize_email(email: str) -> str:
+    """Case-fold and trim an email before it touches the database or a
+    password check. Without this, "User@Example.com" and
+    "user@example.com" register as two different accounts, and a login
+    attempt with different casing than the one used at registration fails
+    even with the correct password."""
+    return email.strip().lower()
  
  
 def create_access_token(user_id: int, email: str) -> str:
