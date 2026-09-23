@@ -16,6 +16,7 @@ logic itself against synthetic errors in test_quota_classification.py.
  
 import os
 import uuid
+from urllib.parse import urlparse
  
 import pytest
  
@@ -29,6 +30,52 @@ os.environ.setdefault(
 )
 os.environ.setdefault("GEMINI_API_KEY", "test-key-not-a-real-key")
 os.environ.setdefault("JWT_SECRET_KEY", "test-jwt-secret-not-for-production")
+ 
+ 
+def _refuse_to_run_against_a_database_that_might_be_real() -> None:
+    """`_clean_tables` below runs TRUNCATE ... CASCADE after every single
+    test. `os.environ.setdefault` above only sets DATABASE_URL if it isn't
+    already set -- so if a developer's shell already has DATABASE_URL
+    exported (e.g. from a real Neon/production .env they sourced for some
+    other reason), TEST_DATABASE_URL is silently ignored and the ENTIRE
+    test suite truncates their real database, test by test, with no
+    warning. This is not a hypothetical: it is exactly the kind of mistake
+    that is invisible until the data is already gone.
+ 
+    This is a heuristic, not a guarantee -- there is no way to know for
+    certain that a URL is "safe" to truncate. It blocks the common
+    accident (a URL that is neither localhost nor named like a test
+    database) and can be overridden with DOCUMIND_ALLOW_ANY_TEST_DB=1 for
+    a deliberately different setup (e.g. a CI database that isn't named
+    "test" but is still definitely disposable).
+    """
+    if os.environ.get("DOCUMIND_ALLOW_ANY_TEST_DB") == "1":
+        return
+    url = os.environ["DATABASE_URL"]
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    db_name = (parsed.path or "").lstrip("/").lower()
+    looks_local = host in ("localhost", "127.0.0.1", "::1") or host.endswith(".docker.internal")
+    looks_like_a_test_db = "test" in db_name
+    if not (looks_local or looks_like_a_test_db):
+        raise RuntimeError(
+            "\n\nRefusing to run the test suite: DATABASE_URL does not look like a "
+            "test database (host is not localhost, and the database name doesn't "
+            "contain 'test').\n"
+            f"  DATABASE_URL host: {host or '(none)'}\n"
+            f"  DATABASE_URL database name: {db_name or '(none)'}\n\n"
+            "Every test run TRUNCATEs all data in this database after each test. "
+            "If this really is a disposable test database, either rename it to "
+            "include 'test', or set DOCUMIND_ALLOW_ANY_TEST_DB=1 to bypass this "
+            "check. If you're not sure, STOP: check what DATABASE_URL is already "
+            "set to in your shell -- it may be pointing at a real database, and "
+            "TEST_DATABASE_URL is only used as a fallback via os.environ."
+            "setdefault(), so it is silently ignored when DATABASE_URL is already "
+            "set.\n"
+        )
+ 
+ 
+_refuse_to_run_against_a_database_that_might_be_real()
  
 from app import database
 from app.chat_engine import ChatEngine
@@ -92,4 +139,3 @@ def chat_engine() -> ChatEngine:
     QuotaError.
     """
     return ChatEngine()
- 
