@@ -1,25 +1,25 @@
 """
 Shared pytest fixtures.
- 
+
 DB strategy: tests run against a REAL pgvector Postgres instance (not mocked),
 pointed at by TEST_DATABASE_URL (falls back to DATABASE_URL, then a local
 docker-compose default). This catches things a mocked DB layer can't:
 pgvector dimension limits, the halfvec cast, index creation, real SQL syntax
 errors. See docker-compose.yml `db` service for the local instance, or the
 `postgres-pgvector` service in ci.yml for CI.
- 
+
 LLM strategy: Gemini calls ARE mocked (via the `chat_engine` fixture below).
 We don't want tests burning API quota, needing real credentials, or being
 flaky because of network/quota errors — and we already unit-test the quota
 logic itself against synthetic errors in test_quota_classification.py.
 """
- 
+
 import os
 import uuid
 from urllib.parse import urlparse
- 
+
 import pytest
- 
+
 # Must be set before any `app.*` module is imported, since app.database
 # reads DATABASE_URL lazily via os.getenv() inside get_engine() -- but
 # app.chat_engine.get_client() also reads GEMINI_API_KEY at first use, so
@@ -30,8 +30,8 @@ os.environ.setdefault(
 )
 os.environ.setdefault("GEMINI_API_KEY", "test-key-not-a-real-key")
 os.environ.setdefault("JWT_SECRET_KEY", "test-jwt-secret-not-for-production")
- 
- 
+
+
 def _refuse_to_run_against_a_database_that_might_be_real() -> None:
     """`_clean_tables` below runs TRUNCATE ... CASCADE after every single
     test. `os.environ.setdefault` above only sets DATABASE_URL if it isn't
@@ -41,7 +41,7 @@ def _refuse_to_run_against_a_database_that_might_be_real() -> None:
     test suite truncates their real database, test by test, with no
     warning. This is not a hypothetical: it is exactly the kind of mistake
     that is invisible until the data is already gone.
- 
+
     This is a heuristic, not a guarantee -- there is no way to know for
     certain that a URL is "safe" to truncate. It blocks the common
     accident (a URL that is neither localhost nor named like a test
@@ -73,21 +73,21 @@ def _refuse_to_run_against_a_database_that_might_be_real() -> None:
             "setdefault(), so it is silently ignored when DATABASE_URL is already "
             "set.\n"
         )
- 
- 
+
+
 _refuse_to_run_against_a_database_that_might_be_real()
- 
+
 from app import database
 from app.chat_engine import ChatEngine
- 
- 
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _init_test_database():
     """Create tables/indexes once per test session against the real DB."""
     database.init_db()
     yield
- 
- 
+
+
 @pytest.fixture(autouse=True)
 def _clean_tables():
     """Truncate data between every test so tests don't leak state into
@@ -101,8 +101,8 @@ def _clean_tables():
         from sqlalchemy import text
         conn.execute(text("TRUNCATE TABLE document_chunks, documents, user_usage, users CASCADE"))
         conn.commit()
- 
- 
+
+
 @pytest.fixture
 def test_user() -> dict:
     """A user row created directly via the DB layer (not through the
@@ -111,15 +111,15 @@ def test_user() -> dict:
     itself."""
     from app.auth import hash_password
     return database.create_user("fixture-user@example.com", hash_password("a-fixture-password"))
- 
- 
+
+
 @pytest.fixture
 def doc_id() -> str:
     """A fresh doc_id per test, since document_name/doc_id is how rows
     are scoped in both tables."""
     return str(uuid.uuid4())
- 
- 
+
+
 @pytest.fixture
 def fake_embedding() -> list:
     """A syntactically valid 3072-dim embedding (matches gemini-embedding-001)
@@ -127,8 +127,8 @@ def fake_embedding() -> list:
     most tests -- only test_database.py's ordering test cares about the
     actual numbers."""
     return [0.001 * i for i in range(3072)]
- 
- 
+
+
 @pytest.fixture
 def chat_engine() -> ChatEngine:
     """A real ChatEngine instance (constructing genai.Client with the dummy
