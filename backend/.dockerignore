@@ -1,0 +1,38 @@
+# Without this file, `COPY . .` in the Dockerfile bakes EVERYTHING in this
+# folder into the image -- including a local .env with real secrets (if one
+# exists on the machine running `docker build`), a .venv, and the whole
+# .git history. None of that is needed to run the app, and all of it makes
+# the image bigger and, in .env's case, a real credential leak if the image
+# is ever pushed somewhere or someone gets a shell in the container.
+
+# Secrets and local environment -- never bake these into an image.
+.env
+.env.*
+!.env.example
+
+# Virtual environments and caches
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Test suite -- not needed to run the app; production requirements.txt no
+# longer installs pytest either (see Step 6), so these would be dead
+# weight in the image regardless.
+tests/
+pytest.ini
+coverage.xml
+htmlcov/
+.coverage
+
+# Version control -- the .git directory can be large and is never needed
+# inside the running container.
+.git/
+.gitignore
+
+# Editor/OS cruft
+.vscode/
+.idea/
+.DS_Store
