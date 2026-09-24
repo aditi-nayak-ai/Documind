@@ -1,5 +1,10 @@
 -r requirements.txt
 
+# Everything below is test/lint-only and must NOT be in requirements.txt --
+# a production container has no use for pytest, and installing it there
+# only adds image size and attack surface for no benefit.
 pytest>=8.0,<9.0
 pytest-cov>=5.0,<6.0
+pytest-asyncio>=0.24,<0.25
 reportlab>=4.0,<5.0
+ruff>=0.16,<0.17
