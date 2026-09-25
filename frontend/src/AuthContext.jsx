@@ -46,9 +46,13 @@ export function AuthProvider({ children }) {
   };
  
   const register = async (email, password) => {
-    const res = await api.post("/auth/register", { email, password });
-    localStorage.setItem(TOKEN_KEY, res.data.access_token);
-    setToken(res.data.access_token);
+    // Deliberately does NOT log the user in. Signing up used to store the
+    // returned access_token immediately, so a new account skipped straight
+    // to the upload screen -- the person never confirmed they can actually
+    // log in with the credentials they just typed. Now register() only
+    // creates the account; AuthPage.jsx switches to the login tab
+    // afterward and the person has to log in explicitly.
+    await api.post("/auth/register", { email, password });
   };
  
   const logout = async () => {
