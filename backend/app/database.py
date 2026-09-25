@@ -41,9 +41,14 @@ def init_db():
                 id SERIAL PRIMARY KEY,
                 email TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
+                token_version INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
+        # For a database created before this column existed. Postgres 9.6+
+        # (true of any Neon/Render Postgres in practice) supports IF NOT
+        # EXISTS on ADD COLUMN, so this is safe to run every startup.
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0"))
         # Per-user counters, incremented alongside the global counters in
         # app/metrics.py. Separate from that in-memory, process-local
         # Metrics class: this is per-user, persisted, and survives a
@@ -177,29 +182,53 @@ def create_user(email: str, password_hash: str) -> dict:
             {"user_id": result[0]},
         )
         conn.commit()
-        return {"id": result[0], "email": result[1], "created_at": result[2]}
+        return {"id": result[0], "email": result[1], "created_at": result[2], "token_version": 0}
  
  
 def get_user_by_email(email: str) -> dict:
     with get_engine().connect() as conn:
         result = conn.execute(
-            text("SELECT id, email, password_hash, created_at FROM users WHERE email = :email"),
+            text("SELECT id, email, password_hash, created_at, token_version FROM users WHERE email = :email"),
             {"email": email},
         ).fetchone()
         if result:
-            return {"id": result[0], "email": result[1], "password_hash": result[2], "created_at": result[3]}
+            return {
+                "id": result[0], "email": result[1], "password_hash": result[2],
+                "created_at": result[3], "token_version": result[4],
+            }
         return None
  
  
 def get_user_by_id(user_id: int) -> dict:
     with get_engine().connect() as conn:
         result = conn.execute(
-            text("SELECT id, email, created_at FROM users WHERE id = :id"),
+            text("SELECT id, email, created_at, token_version FROM users WHERE id = :id"),
             {"id": user_id},
         ).fetchone()
         if result:
-            return {"id": result[0], "email": result[1], "created_at": result[2]}
+            return {"id": result[0], "email": result[1], "created_at": result[2], "token_version": result[3]}
         return None
+ 
+ 
+def increment_token_version(user_id: int) -> None:
+    """Bumps the user's token_version, which immediately invalidates every
+    access token issued before this call (see get_current_user in
+    auth.py, which rejects any token whose embedded "tv" claim doesn't
+    match the current value in the database). Called on logout.
+ 
+    This is an all-or-nothing revocation, not a per-token one: it kills
+    every outstanding session for the user at once, not just the one
+    logging out. There's no refresh-token or per-device session tracking
+    in this app, so there's no way to target a single token without
+    storing every issued token somewhere and checking a denylist on every
+    request -- more moving parts for a benefit (revoke this device only,
+    keep others logged in) this single-session app doesn't need yet.
+    """
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("UPDATE users SET token_version = token_version + 1 WHERE id = :id"),
+            {"id": user_id},
+        )
  
  
 def get_ingest_count(user_id: int) -> int:
