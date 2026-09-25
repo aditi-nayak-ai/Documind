@@ -1,92 +1,124 @@
-import { createContext, useContext, useEffect, useState } from "react";
-import { api, setUnauthorizedHandler } from "./api";
+import { act, cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AuthProvider } from "../AuthContext";
+import AuthPage from "./AuthPage";
  
-const AuthContext = createContext(null);
+// AuthPage/AuthContext talk to the backend through this module's `api`
+// instance. Mocking it here means the test exercises the REAL component
+// tree and REAL state transitions (tab switching, the info message,
+// whether localStorage gets written to) without needing a live backend --
+// the previous test suite only used renderToStaticMarkup, which can't
+// simulate a click or a form submit at all, so it could never have
+// caught this bug.
+vi.mock("../api", () => ({
+  api: { post: vi.fn(), get: vi.fn() },
+  setUnauthorizedHandler: vi.fn(),
+}));
+import { api } from "../api";
  
 const TOKEN_KEY = "documind_token";
  
-export function AuthProvider({ children }) {
-  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY));
-  const [user, setUser] = useState(null);
-  // Distinguishes "we haven't checked yet" from "checked, not logged in" --
-  // without this, a page refresh with a valid stored token would flash
-  // the login screen for a moment before /auth/me resolves.
-  const [checkingSession, setCheckingSession] = useState(true);
- 
-  useEffect(() => {
-    // If the api.js interceptor ever sees a 401 (expired/invalid/forged
-    // token — see that file's comment), this is what actually clears the
-    // logged-in UI state to match the token already being gone.
-    setUnauthorizedHandler(() => {
-      setToken(null);
-      setUser(null);
-    });
-  }, []);
- 
-  useEffect(() => {
-    if (!token) {
-      setUser(null);
-      setCheckingSession(false);
-      return;
-    }
-    api
-      .get("/auth/me")
-      .then((res) => setUser(res.data))
-      .catch(() => {
-        setToken(null);
-        setUser(null);
-      })
-      .finally(() => setCheckingSession(false));
-  }, [token]);
- 
-  const login = async (email, password) => {
-    const res = await api.post("/auth/login", { email, password });
-    localStorage.setItem(TOKEN_KEY, res.data.access_token);
-    setToken(res.data.access_token);
-  };
- 
-  const register = async (email, password) => {
-    // Deliberately does NOT log the user in. Signing up used to store the
-    // returned access_token immediately, so a new account skipped straight
-    // to the upload screen -- the person never confirmed they can actually
-    // log in with the credentials they just typed. Now register() only
-    // creates the account; AuthPage.jsx switches to the login tab
-    // afterward and the person has to log in explicitly.
-    await api.post("/auth/register", { email, password });
-  };
- 
-  const logout = async () => {
-    // Best-effort server-side revocation: this bumps the user's
-    // token_version (see backend app/database.py increment_token_version),
-    // which immediately invalidates this token -- and every other
-    // outstanding token for this user -- rather than leaving it valid
-    // for the rest of its 7-day life with no way to kill it. If the
-    // request fails (offline, server down), we still clear local state
-    // below so the user isn't stuck unable to log out from this device;
-    // the token itself would remain valid server-side until it expires
-    // in that case, same as before this change.
-    try {
-      await api.post("/auth/logout");
-    } catch {
-      // Swallow: logging out locally must succeed even if the network
-      // call didn't. See comment above.
-    }
-    localStorage.removeItem(TOKEN_KEY);
-    setToken(null);
-    setUser(null);
-  };
- 
-  return (
-    <AuthContext.Provider
-      value={{ token, user, isAuthenticated: !!token, checkingSession, login, register, logout }}
-    >
-      {children}
-    </AuthContext.Provider>
+function renderAuthPage() {
+  return render(
+    <AuthProvider>
+      <AuthPage />
+    </AuthProvider>
   );
 }
  
-export function useAuth() {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error("useAuth must be used within an AuthProvider");
-  return ctx;
-}
+beforeEach(() => {
+  localStorage.clear();
+  vi.clearAllMocks();
+});
+ 
+describe("signup no longer logs the user in", () => {
+  it("does not store a token after a successful registration", async () => {
+    api.post.mockResolvedValueOnce({ data: { access_token: "token-that-must-not-be-used" } });
+    const user = userEvent.setup();
+    renderAuthPage();
+ 
+    await user.click(screen.getByText("Sign up"));
+    await user.type(screen.getByLabelText("Email"), "new@example.com");
+    await user.type(screen.getByLabelText("Password"), "a-real-password-1");
+    await user.click(screen.getByRole("button", { name: /create account/i }));
+ 
+    expect(api.post).toHaveBeenCalledWith("/auth/register", {
+      email: "new@example.com",
+      password: "a-real-password-1",
+    });
+    // The core regression this test guards: registering used to store
+    // whatever access_token the backend returned and flip the app
+    // straight to the upload screen. It must not do that anymore.
+    expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
+  });
+ 
+  it("switches to the login tab and prompts the user to log in", async () => {
+    api.post.mockResolvedValueOnce({ data: { access_token: "unused" } });
+    const user = userEvent.setup();
+    renderAuthPage();
+ 
+    await user.click(screen.getByText("Sign up"));
+    await user.type(screen.getByLabelText("Email"), "new@example.com");
+    await user.type(screen.getByLabelText("Password"), "a-real-password-1");
+    await user.click(screen.getByRole("button", { name: /create account/i }));
+ 
+    expect(await screen.findByText("Account created. Log in to continue.")).toBeInTheDocument();
+    // The submit button's label is mode-driven -- "Log in" only renders
+    // once mode has actually flipped from "register" back to "login".
+    expect(screen.getByRole("button", { name: "Log in" })).toBeInTheDocument();
+  });
+ 
+  it("clears the password field after registering, but keeps the email", async () => {
+    api.post.mockResolvedValueOnce({ data: { access_token: "unused" } });
+    const user = userEvent.setup();
+    renderAuthPage();
+ 
+    await user.click(screen.getByText("Sign up"));
+    await user.type(screen.getByLabelText("Email"), "new@example.com");
+    await user.type(screen.getByLabelText("Password"), "a-real-password-1");
+    await user.click(screen.getByRole("button", { name: /create account/i }));
+ 
+    await screen.findByText("Account created. Log in to continue.");
+    expect(screen.getByLabelText("Email")).toHaveValue("new@example.com");
+    expect(screen.getByLabelText("Password")).toHaveValue("");
+  });
+ 
+  it("still lets the user actually log in afterward, and that DOES store a token", async () => {
+    api.post
+      .mockResolvedValueOnce({ data: { access_token: "unused" } }) // register
+      .mockResolvedValueOnce({ data: { access_token: "real-session-token" } }); // login
+    const user = userEvent.setup();
+    renderAuthPage();
+ 
+    await user.click(screen.getByText("Sign up"));
+    await user.type(screen.getByLabelText("Email"), "new@example.com");
+    await user.type(screen.getByLabelText("Password"), "a-real-password-1");
+    await user.click(screen.getByRole("button", { name: /create account/i }));
+    await screen.findByText("Account created. Log in to continue.");
+ 
+    await user.type(screen.getByLabelText("Password"), "a-real-password-1");
+    await user.click(screen.getByRole("button", { name: "Log in" }));
+ 
+    expect(api.post).toHaveBeenLastCalledWith("/auth/login", {
+      email: "new@example.com",
+      password: "a-real-password-1",
+    });
+    await vi.waitFor(() => expect(localStorage.getItem(TOKEN_KEY)).toBe("real-session-token"));
+  });
+ 
+  it("clears the info message when the user manually switches tabs", async () => {
+    api.post.mockResolvedValueOnce({ data: { access_token: "unused" } });
+    const user = userEvent.setup();
+    renderAuthPage();
+ 
+    await user.click(screen.getByText("Sign up"));
+    await user.type(screen.getByLabelText("Email"), "new@example.com");
+    await user.type(screen.getByLabelText("Password"), "a-real-password-1");
+    await user.click(screen.getByRole("button", { name: /create account/i }));
+    await screen.findByText("Account created. Log in to continue.");
+ 
+    await user.click(screen.getByText("Sign up"));
+    expect(screen.queryByText("Account created. Log in to continue.")).not.toBeInTheDocument();
+  });
+});
