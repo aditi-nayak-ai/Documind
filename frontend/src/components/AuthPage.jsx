@@ -1,23 +1,34 @@
 import { useState } from "react";
 import { useAuth } from "../AuthContext";
-
+ 
 export default function AuthPage() {
   const { login, register } = useAuth();
   const [mode, setMode] = useState("login"); // "login" | "register"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
   const [loading, setLoading] = useState(false);
-
+ 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
+    setInfo("");
     setLoading(true);
     try {
       if (mode === "login") {
         await login(email, password);
       } else {
         await register(email, password);
+        // Don't stay logged in as this brand-new account -- send the
+        // person to the login tab instead, so they confirm the
+        // credentials they just typed actually work. Keep the email
+        // filled in (one less thing to retype); clear the password so
+        // it isn't sitting in state any longer than it needs to be.
+        setMode("login");
+        setPassword("");
+        setInfo("Account created. Log in to continue.");
+        return;
       }
     } catch (e) {
       const detail = e.response?.data?.detail;
@@ -36,7 +47,7 @@ export default function AuthPage() {
       setLoading(false);
     }
   };
-
+ 
   const s = {
     page: {
       display: "flex", flexDirection: "column", alignItems: "center",
@@ -86,41 +97,46 @@ export default function AuthPage() {
       marginTop: "14px", fontSize: "12px", color: "var(--danger-text)",
       background: "var(--danger-bg)", padding: "9px 12px", borderRadius: "var(--radius-sm)",
     },
+    infoMsg: {
+      marginTop: "14px", fontSize: "12px", color: "var(--success-text)",
+      background: "var(--success-bg)", padding: "9px 12px", borderRadius: "var(--radius-sm)",
+    },
   };
-
+ 
   return (
     <div style={s.page}>
       <p style={s.wordmark}>Docu<span style={s.accent}>Mind</span></p>
       <p style={s.tagline}>Sign in to upload and chat with your documents.</p>
-
+ 
       <div style={s.card}>
         <div style={s.tabRow}>
-          <div style={s.tab(mode === "login")} onClick={() => { setMode("login"); setError(""); }}>
+          <div style={s.tab(mode === "login")} onClick={() => { setMode("login"); setError(""); setInfo(""); }}>
             Log in
           </div>
-          <div style={s.tab(mode === "register")} onClick={() => { setMode("register"); setError(""); }}>
+          <div style={s.tab(mode === "register")} onClick={() => { setMode("register"); setError(""); setInfo(""); }}>
             Sign up
           </div>
         </div>
-
+ 
         <form onSubmit={handleSubmit}>
           <label style={s.label} htmlFor="email">Email</label>
           <input id="email" type="email" style={s.input} value={email}
             onChange={(e) => setEmail(e.target.value)} required autoComplete="email" />
-
+ 
           <label style={s.label} htmlFor="password">Password</label>
           <input id="password" type="password" style={s.input} value={password}
             onChange={(e) => setPassword(e.target.value)} required
             minLength={mode === "register" ? 8 : undefined}
             autoComplete={mode === "login" ? "current-password" : "new-password"} />
           {mode === "register" && <p style={s.hint}>At least 8 characters.</p>}
-
+ 
           <button type="submit" style={s.submitBtn} disabled={loading}>
             {loading ? "Please wait…" : mode === "login" ? "Log in" : "Create account"}
           </button>
         </form>
-
+ 
         {error && <p style={s.errorMsg}>{error}</p>}
+        {info && <p style={s.infoMsg}>{info}</p>}
       </div>
     </div>
   );
