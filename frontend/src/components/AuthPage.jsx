@@ -1,124 +1,131 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AuthProvider } from "../AuthContext";
-import AuthPage from "./AuthPage";
+import { useState } from "react";
+import { useAuth } from "../AuthContext";
  
-// AuthPage/AuthContext talk to the backend through this module's `api`
-// instance. Mocking it here means the test exercises the REAL component
-// tree and REAL state transitions (tab switching, the info message,
-// whether localStorage gets written to) without needing a live backend --
-// the previous test suite only used renderToStaticMarkup, which can't
-// simulate a click or a form submit at all, so it could never have
-// caught this bug.
-vi.mock("../api", () => ({
-  api: { post: vi.fn(), get: vi.fn() },
-  setUnauthorizedHandler: vi.fn(),
-}));
-import { api } from "../api";
+const s = {
+  wrap: {
+    minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
+    background: "var(--bg)",
+  },
+  card: {
+    width: "340px", padding: "28px", background: "var(--bg-card)",
+    border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+  },
+  title: { fontSize: "16px", fontWeight: 600, color: "var(--text-primary)", marginBottom: "18px" },
+  brandAccent: { color: "var(--accent)" },
+  field: { marginBottom: "14px" },
+  label: { display: "block", fontSize: "12px", color: "var(--text-secondary)", marginBottom: "5px" },
+  input: {
+    width: "100%", padding: "8px 10px", fontSize: "13px", boxSizing: "border-box",
+    border: "1px solid var(--border-mid)", borderRadius: "var(--radius-sm)", fontFamily: "inherit",
+  },
+  submit: {
+    width: "100%", padding: "9px", fontSize: "13px", fontWeight: 600, color: "#fff",
+    background: "var(--accent)", border: "none", borderRadius: "var(--radius-sm)",
+    cursor: "pointer", fontFamily: "inherit", marginTop: "4px",
+  },
+  switchRow: { marginTop: "14px", fontSize: "12px", color: "var(--text-secondary)", textAlign: "center" },
+  switchLink: { color: "var(--accent)", cursor: "pointer", fontWeight: 600 },
+  error: { fontSize: "12px", color: "var(--danger-text)", marginBottom: "10px" },
+  info: { fontSize: "12px", color: "var(--success-text)", marginBottom: "10px" },
+};
  
-const TOKEN_KEY = "documind_token";
+export default function AuthPage() {
+  const { login, register } = useAuth();
+  const [mode, setMode] = useState("login"); // "login" | "register"
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
+  const [submitting, setSubmitting] = useState(false);
  
-function renderAuthPage() {
-  return render(
-    <AuthProvider>
-      <AuthPage />
-    </AuthProvider>
+  // Manually switching tabs is a fresh start -- any leftover error or
+  // "account created" message from the previous mode shouldn't linger.
+  const switchMode = (nextMode) => {
+    setMode(nextMode);
+    setError("");
+    setInfo("");
+  };
+ 
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setSubmitting(true);
+    try {
+      if (mode === "register") {
+        await register(email, password);
+        // Registering does not log the user in (see AuthContext.jsx) --
+        // send them to the login tab instead, with the password field
+        // cleared but the email they just typed still filled in.
+        setPassword("");
+        setMode("login");
+        setInfo("Account created. Log in to continue.");
+      } else {
+        await login(email, password);
+      }
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      setError(
+        Array.isArray(detail)
+          ? detail.map((d) => d.msg).join(" ")
+          : detail || "Something went wrong. Please try again."
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+ 
+  return (
+    <div style={s.wrap}>
+      <div style={s.card}>
+        <div style={s.title}>
+          Docu<span style={s.brandAccent}>Mind</span>
+        </div>
+        {error && <div style={s.error}>{error}</div>}
+        {info && <div style={s.info}>{info}</div>}
+        <form onSubmit={handleSubmit}>
+          <div style={s.field}>
+            <label style={s.label} htmlFor="auth-email">Email</label>
+            <input
+              id="auth-email"
+              type="email"
+              autoComplete="email"
+              style={s.input}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+            />
+          </div>
+          <div style={s.field}>
+            <label style={s.label} htmlFor="auth-password">Password</label>
+            <input
+              id="auth-password"
+              type="password"
+              autoComplete={mode === "register" ? "new-password" : "current-password"}
+              style={s.input}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              minLength={mode === "register" ? 8 : undefined}
+            />
+          </div>
+          <button type="submit" style={s.submit} disabled={submitting}>
+            {mode === "register" ? "Create account" : "Log in"}
+          </button>
+        </form>
+        <div style={s.switchRow}>
+          {mode === "login" ? (
+            <>
+              Don&apos;t have an account?{" "}
+              <span style={s.switchLink} onClick={() => switchMode("register")}>Sign up</span>
+            </>
+          ) : (
+            <>
+              Already have an account?{" "}
+              <span style={s.switchLink} onClick={() => switchMode("login")}>Log in</span>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
- 
-beforeEach(() => {
-  localStorage.clear();
-  vi.clearAllMocks();
-});
- 
-describe("signup no longer logs the user in", () => {
-  it("does not store a token after a successful registration", async () => {
-    api.post.mockResolvedValueOnce({ data: { access_token: "token-that-must-not-be-used" } });
-    const user = userEvent.setup();
-    renderAuthPage();
- 
-    await user.click(screen.getByText("Sign up"));
-    await user.type(screen.getByLabelText("Email"), "new@example.com");
-    await user.type(screen.getByLabelText("Password"), "a-real-password-1");
-    await user.click(screen.getByRole("button", { name: /create account/i }));
- 
-    expect(api.post).toHaveBeenCalledWith("/auth/register", {
-      email: "new@example.com",
-      password: "a-real-password-1",
-    });
-    // The core regression this test guards: registering used to store
-    // whatever access_token the backend returned and flip the app
-    // straight to the upload screen. It must not do that anymore.
-    expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
-  });
- 
-  it("switches to the login tab and prompts the user to log in", async () => {
-    api.post.mockResolvedValueOnce({ data: { access_token: "unused" } });
-    const user = userEvent.setup();
-    renderAuthPage();
- 
-    await user.click(screen.getByText("Sign up"));
-    await user.type(screen.getByLabelText("Email"), "new@example.com");
-    await user.type(screen.getByLabelText("Password"), "a-real-password-1");
-    await user.click(screen.getByRole("button", { name: /create account/i }));
- 
-    expect(await screen.findByText("Account created. Log in to continue.")).toBeInTheDocument();
-    // The submit button's label is mode-driven -- "Log in" only renders
-    // once mode has actually flipped from "register" back to "login".
-    expect(screen.getByRole("button", { name: "Log in" })).toBeInTheDocument();
-  });
- 
-  it("clears the password field after registering, but keeps the email", async () => {
-    api.post.mockResolvedValueOnce({ data: { access_token: "unused" } });
-    const user = userEvent.setup();
-    renderAuthPage();
- 
-    await user.click(screen.getByText("Sign up"));
-    await user.type(screen.getByLabelText("Email"), "new@example.com");
-    await user.type(screen.getByLabelText("Password"), "a-real-password-1");
-    await user.click(screen.getByRole("button", { name: /create account/i }));
- 
-    await screen.findByText("Account created. Log in to continue.");
-    expect(screen.getByLabelText("Email")).toHaveValue("new@example.com");
-    expect(screen.getByLabelText("Password")).toHaveValue("");
-  });
- 
-  it("still lets the user actually log in afterward, and that DOES store a token", async () => {
-    api.post
-      .mockResolvedValueOnce({ data: { access_token: "unused" } }) // register
-      .mockResolvedValueOnce({ data: { access_token: "real-session-token" } }); // login
-    const user = userEvent.setup();
-    renderAuthPage();
- 
-    await user.click(screen.getByText("Sign up"));
-    await user.type(screen.getByLabelText("Email"), "new@example.com");
-    await user.type(screen.getByLabelText("Password"), "a-real-password-1");
-    await user.click(screen.getByRole("button", { name: /create account/i }));
-    await screen.findByText("Account created. Log in to continue.");
- 
-    await user.type(screen.getByLabelText("Password"), "a-real-password-1");
-    await user.click(screen.getByRole("button", { name: "Log in" }));
- 
-    expect(api.post).toHaveBeenLastCalledWith("/auth/login", {
-      email: "new@example.com",
-      password: "a-real-password-1",
-    });
-    await vi.waitFor(() => expect(localStorage.getItem(TOKEN_KEY)).toBe("real-session-token"));
-  });
- 
-  it("clears the info message when the user manually switches tabs", async () => {
-    api.post.mockResolvedValueOnce({ data: { access_token: "unused" } });
-    const user = userEvent.setup();
-    renderAuthPage();
- 
-    await user.click(screen.getByText("Sign up"));
-    await user.type(screen.getByLabelText("Email"), "new@example.com");
-    await user.type(screen.getByLabelText("Password"), "a-real-password-1");
-    await user.click(screen.getByRole("button", { name: /create account/i }));
-    await screen.findByText("Account created. Log in to continue.");
- 
-    await user.click(screen.getByText("Sign up"));
-    expect(screen.queryByText("Account created. Log in to continue.")).not.toBeInTheDocument();
-  });
-});
