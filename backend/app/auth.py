@@ -1,22 +1,28 @@
-"""Stateless JWT auth.
+"""JWT auth with server-side session revocation.
  
-Deliberately simple: bcrypt password hashing, a signed JWT carrying the
-user id, and one FastAPI dependency (get_current_user) that routes
-requiring auth depend on. No session store, no refresh tokens, no
-revocation list -- a logout is purely client-side (drop the token; see
-frontend/src/AuthContext.jsx's logout comment). That tradeoff means a
-stolen token stays valid until it expires (jwt_expire_minutes in
-config.py) with no way to force-invalidate it server-side; if that ever
-matters for this project, the fix is a server-side revocation store
-(e.g. a denylist of token IDs in Redis/Postgres checked on every
-request), not a change to this file's basic shape.
+bcrypt password hashing, a signed JWT carrying the user id, and one
+FastAPI dependency (get_current_user) that routes requiring auth depend
+on. Revocation is version-based, not a per-token denylist: users.token_
+version increments on logout (database.increment_token_version), and
+every JWT embeds the token_version that was current when it was issued
+(the "tv" claim). get_current_user rejects any token whose "tv" doesn't
+match the user's current token_version in the database -- so logout (or
+any future "log out everywhere" action) invalidates that token, and every
+other outstanding token for that user, immediately, without needing to
+store or look up individual token IDs. The tradeoff: there's no way to
+revoke a single device's session while leaving others logged in, since
+there's no per-device/per-token identity being tracked, only a per-user
+counter. If that ever matters, the fix is a real session table (one row
+per issued token, with device info) rather than a change to this file's
+basic shape.
  
 get_current_user raises HTTPException(401) for every failure mode --
-missing header, malformed token, expired token, forged signature, or a
-token for a user that no longer exists -- and never any other status.
-The frontend's axios interceptor (api.js) depends on that: any 401 means
-"drop the token and show the login screen," and that's only safe to do
-unconditionally if 401 is never used here to mean something else.
+missing header, malformed token, expired token, forged signature, a
+revoked token (stale token_version), or a token for a user that no longer
+exists -- and never any other status. The frontend's axios interceptor
+(api.js) depends on that: any 401 means "drop the token and show the
+login screen," and that's only safe to do unconditionally if 401 is never
+used here to mean something else.
 """
  
 import time
@@ -74,11 +80,12 @@ def normalize_email(email: str) -> str:
     return email.strip().lower()
  
  
-def create_access_token(user_id: int, email: str) -> str:
+def create_access_token(user_id: int, email: str, token_version: int = 0) -> str:
     now = int(time.time())
     payload = {
         "sub": str(user_id),
         "email": email,
+        "tv": token_version,
         "iat": now,
         "exp": now + settings.jwt_expire_minutes * 60,
     }
@@ -113,5 +120,13 @@ def get_current_user(
         # Token is validly signed but the user it names no longer exists
         # (deleted account, etc.) -- still a 401, per this module's
         # single-failure-status guarantee, not a 404.
+        raise HTTPException(status_code=401, detail="Invalid or expired token.")
+    # payload.get(..., 0) rather than payload["tv"]: a token issued in the
+    # few seconds before this check was deployed won't carry a "tv" claim
+    # at all. Treating that as 0 matches token_version's DEFAULT 0 column,
+    # so an in-flight token from just before a deploy isn't force-logged-out
+    # by the deploy itself -- only an actual logout (increment_token_version)
+    # invalidates it.
+    if payload.get("tv", 0) != user["token_version"]:
         raise HTTPException(status_code=401, detail="Invalid or expired token.")
     return user
