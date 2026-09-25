@@ -26,6 +26,7 @@ from app.database import (
     create_user,
     get_ingest_count,
     get_user_by_email,
+    increment_token_version,
     increment_user_usage,
     init_db,
 )
@@ -134,7 +135,7 @@ def register(request: Request, body: RegisterRequest):
     if get_user_by_email(email):
         raise HTTPException(status_code=409, detail="An account with this email already exists.")
     user = create_user(email, hash_password(body.password))
-    token = create_access_token(user["id"], user["email"])
+    token = create_access_token(user["id"], user["email"], user["token_version"])
     return TokenResponse(access_token=token)
  
  
@@ -153,8 +154,21 @@ def login(request: Request, body: LoginRequest):
     password_ok = verify_password(body.password, password_hash)
     if not user or not password_ok:
         raise HTTPException(status_code=401, detail="Incorrect email or password.")
-    token = create_access_token(user["id"], user["email"])
+    token = create_access_token(user["id"], user["email"], user["token_version"])
     return TokenResponse(access_token=token)
+ 
+ 
+@app.post("/auth/logout", status_code=204)
+def logout(current_user=Depends(get_current_user)):  # noqa: B008 -- FastAPI's documented DI pattern
+    """Server-side revocation, not just "the client throws its token away".
+    Bumps the user's token_version, which immediately invalidates the
+    token used to call this endpoint -- and every other outstanding token
+    for this user, since revocation here is per-user, not per-token (see
+    app/auth.py's module docstring for why). A stolen or leaked token can
+    now actually be killed instead of staying valid for the rest of its
+    7-day life with no way to stop it."""
+    increment_token_version(current_user["id"])
+    return Response(status_code=204)
  
  
 @app.get("/auth/me")
