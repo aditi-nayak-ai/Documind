@@ -14,7 +14,7 @@ export const api = axios.create({ baseURL: BACKEND });
 // client-creation time) means a login/logout that happens after this
 // module first loads is picked up immediately, with no stale-closure bug.
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem("documind_token");
+  const token = sessionStorage.getItem("documind_token");
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -36,7 +36,7 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      localStorage.removeItem("documind_token");
+      sessionStorage.removeItem("documind_token");
       onUnauthorized();
     }
     return Promise.reject(error);
