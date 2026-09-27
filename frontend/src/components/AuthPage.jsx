@@ -1,34 +1,6 @@
 import { useState } from "react";
 import { useAuth } from "../AuthContext";
  
-const s = {
-  wrap: {
-    minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
-    background: "var(--bg)",
-  },
-  card: {
-    width: "340px", padding: "28px", background: "var(--bg-card)",
-    border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
-  },
-  title: { fontSize: "16px", fontWeight: 600, color: "var(--text-primary)", marginBottom: "18px" },
-  brandAccent: { color: "var(--accent)" },
-  field: { marginBottom: "14px" },
-  label: { display: "block", fontSize: "12px", color: "var(--text-secondary)", marginBottom: "5px" },
-  input: {
-    width: "100%", padding: "8px 10px", fontSize: "13px", boxSizing: "border-box",
-    border: "1px solid var(--border-mid)", borderRadius: "var(--radius-sm)", fontFamily: "inherit",
-  },
-  submit: {
-    width: "100%", padding: "9px", fontSize: "13px", fontWeight: 600, color: "#fff",
-    background: "var(--accent)", border: "none", borderRadius: "var(--radius-sm)",
-    cursor: "pointer", fontFamily: "inherit", marginTop: "4px",
-  },
-  switchRow: { marginTop: "14px", fontSize: "12px", color: "var(--text-secondary)", textAlign: "center" },
-  switchLink: { color: "var(--accent)", cursor: "pointer", fontWeight: 600 },
-  error: { fontSize: "12px", color: "var(--danger-text)", marginBottom: "10px" },
-  info: { fontSize: "12px", color: "var(--success-text)", marginBottom: "10px" },
-};
- 
 export default function AuthPage() {
   const { login, register } = useAuth();
   const [mode, setMode] = useState("login"); // "login" | "register"
@@ -36,95 +8,135 @@ export default function AuthPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
-  const [submitting, setSubmitting] = useState(false);
- 
-  // Manually switching tabs is a fresh start -- any leftover error or
-  // "account created" message from the previous mode shouldn't linger.
-  const switchMode = (nextMode) => {
-    setMode(nextMode);
-    setError("");
-    setInfo("");
-  };
+  const [loading, setLoading] = useState(false);
  
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
-    setSubmitting(true);
+    setInfo("");
+    setLoading(true);
     try {
-      if (mode === "register") {
-        await register(email, password);
-        // Registering does not log the user in (see AuthContext.jsx) --
-        // send them to the login tab instead, with the password field
-        // cleared but the email they just typed still filled in.
-        setPassword("");
-        setMode("login");
-        setInfo("Account created. Log in to continue.");
-      } else {
+      if (mode === "login") {
         await login(email, password);
+      } else {
+        await register(email, password);
+        // Don't stay logged in as this brand-new account -- send the
+        // person to the login tab instead, so they confirm the
+        // credentials they just typed actually work. Keep the email
+        // filled in (one less thing to retype); clear the password so
+        // it isn't sitting in state any longer than it needs to be.
+        setMode("login");
+        setPassword("");
+        setInfo("Account created. Log in to continue.");
+        return;
       }
-    } catch (err) {
-      const detail = err.response?.data?.detail;
-      setError(
-        Array.isArray(detail)
-          ? detail.map((d) => d.msg).join(" ")
-          : detail || "Something went wrong. Please try again."
-      );
+    } catch (e) {
+      const detail = e.response?.data?.detail;
+      if (Array.isArray(detail)) {
+        // FastAPI/pydantic 422 responses return a list of validation
+        // errors, not a single string -- e.g. password under 8 chars.
+        setError(detail.map((d) => d.msg).join(" "));
+      } else if (detail) {
+        setError(detail);
+      } else if (e.request) {
+        setError("Cannot reach the server. Check that the backend is running.");
+      } else {
+        setError("Unexpected error. Please try again.");
+      }
     } finally {
-      setSubmitting(false);
+      setLoading(false);
     }
   };
  
+  const s = {
+    page: {
+      display: "flex", flexDirection: "column", alignItems: "center",
+      justifyContent: "center", minHeight: "100vh", padding: "2rem",
+      background: "var(--bg)",
+    },
+    wordmark: {
+      fontSize: "32px", fontWeight: 600, color: "var(--text-primary)",
+      letterSpacing: "-0.5px", marginBottom: "6px",
+    },
+    accent: { color: "var(--accent)" },
+    tagline: { fontSize: "14px", color: "var(--text-secondary)", marginBottom: "2rem" },
+    card: {
+      width: "100%", maxWidth: "360px", background: "var(--bg-card)",
+      border: "1px solid var(--border)", borderRadius: "var(--radius-lg)", padding: "1.75rem",
+    },
+    tabRow: {
+      display: "flex", gap: "4px", marginBottom: "1.25rem",
+      background: "var(--bg)", borderRadius: "var(--radius-sm)", padding: "3px",
+    },
+    tab: (active) => ({
+      flex: 1, textAlign: "center", padding: "7px 0", fontSize: "13px",
+      fontWeight: 500, borderRadius: "6px", cursor: "pointer",
+      color: active ? "#fff" : "var(--text-secondary)",
+      background: active ? "var(--accent)" : "transparent",
+      transition: "background 0.15s, color 0.15s",
+    }),
+    label: {
+      display: "block", fontSize: "12px", color: "var(--text-secondary)",
+      marginBottom: "5px", marginTop: "12px",
+    },
+    input: {
+      width: "100%", boxSizing: "border-box", background: "var(--bg)",
+      border: "1px solid var(--border-mid)", borderRadius: "var(--radius-sm)",
+      padding: "9px 12px", fontSize: "13px", color: "var(--text-primary)",
+      fontFamily: "inherit", outline: "none",
+    },
+    hint: { fontSize: "11px", color: "var(--text-muted)", marginTop: "5px" },
+    submitBtn: {
+      width: "100%", marginTop: "20px",
+      background: loading ? "rgba(124,58,237,0.5)" : "var(--accent)",
+      color: "#fff", fontSize: "13px", fontWeight: 500, padding: "10px 0",
+      borderRadius: "var(--radius-sm)", border: "none",
+      cursor: loading ? "default" : "pointer", fontFamily: "inherit",
+    },
+    errorMsg: {
+      marginTop: "14px", fontSize: "12px", color: "var(--danger-text)",
+      background: "var(--danger-bg)", padding: "9px 12px", borderRadius: "var(--radius-sm)",
+    },
+    infoMsg: {
+      marginTop: "14px", fontSize: "12px", color: "var(--success-text)",
+      background: "var(--success-bg)", padding: "9px 12px", borderRadius: "var(--radius-sm)",
+    },
+  };
+ 
   return (
-    <div style={s.wrap}>
+    <div style={s.page}>
+      <p style={s.wordmark}>Docu<span style={s.accent}>Mind</span></p>
+      <p style={s.tagline}>Sign in to upload and chat with your documents.</p>
+ 
       <div style={s.card}>
-        <div style={s.title}>
-          Docu<span style={s.brandAccent}>Mind</span>
+        <div style={s.tabRow}>
+          <div style={s.tab(mode === "login")} onClick={() => { setMode("login"); setError(""); setInfo(""); }}>
+            Log in
+          </div>
+          <div style={s.tab(mode === "register")} onClick={() => { setMode("register"); setError(""); setInfo(""); }}>
+            Sign up
+          </div>
         </div>
-        {error && <div style={s.error}>{error}</div>}
-        {info && <div style={s.info}>{info}</div>}
+ 
         <form onSubmit={handleSubmit}>
-          <div style={s.field}>
-            <label style={s.label} htmlFor="auth-email">Email</label>
-            <input
-              id="auth-email"
-              type="email"
-              autoComplete="email"
-              style={s.input}
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-            />
-          </div>
-          <div style={s.field}>
-            <label style={s.label} htmlFor="auth-password">Password</label>
-            <input
-              id="auth-password"
-              type="password"
-              autoComplete={mode === "register" ? "new-password" : "current-password"}
-              style={s.input}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              minLength={mode === "register" ? 8 : undefined}
-            />
-          </div>
-          <button type="submit" style={s.submit} disabled={submitting}>
-            {mode === "register" ? "Create account" : "Log in"}
+          <label style={s.label} htmlFor="email">Email</label>
+          <input id="email" type="email" style={s.input} value={email}
+            onChange={(e) => setEmail(e.target.value)} required autoComplete="email" />
+ 
+          <label style={s.label} htmlFor="password">Password</label>
+          <input id="password" type="password" style={s.input} value={password}
+            onChange={(e) => setPassword(e.target.value)} required
+            minLength={mode === "register" ? 8 : undefined}
+            autoComplete={mode === "login" ? "current-password" : "new-password"} />
+          {mode === "register" && <p style={s.hint}>At least 8 characters.</p>}
+ 
+          <button type="submit" style={s.submitBtn} disabled={loading}>
+            {loading ? "Please wait…" : mode === "login" ? "Log in" : "Create account"}
           </button>
         </form>
-        <div style={s.switchRow}>
-          {mode === "login" ? (
-            <>
-              Don&apos;t have an account?{" "}
-              <span style={s.switchLink} onClick={() => switchMode("register")}>Sign up</span>
-            </>
-          ) : (
-            <>
-              Already have an account?{" "}
-              <span style={s.switchLink} onClick={() => switchMode("login")}>Log in</span>
-            </>
-          )}
-        </div>
+ 
+        {error && <p style={s.errorMsg}>{error}</p>}
+        {info && <p style={s.infoMsg}>{info}</p>}
       </div>
     </div>
   );
