@@ -35,7 +35,7 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 80) -> list:
       2. A second pass prepends a small tail of each chunk onto the next
          one (`overlap` chars). Without this, a fact sitting right at a
          chunk boundary could end up split across two chunks and not
-         fully present in either -- with fixed top_k=3 retrieval, that
+         fully present in either -- with fixed top_k=5 retrieval, that
          made it structurally unrecoverable, not just harder to find.
     """
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
