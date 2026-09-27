@@ -1,60 +1,119 @@
 import { useState, useRef, useEffect } from "react";
-import { api } from "../api";
-
+import { BACKEND } from "../api";
+ 
 export default function ChatWindow({ docId }) {
   const [messages, setMessages] = useState([]);
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const bottomRef = useRef();
-
+ 
   // Scroll to the newest message whenever the conversation grows.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
-
+ 
   const handleSend = async () => {
     const trimmed = question.trim();
     if (!trimmed || loading) return;
-
+ 
     setError("");
     setMessages((prev) => [...prev, { role: "user", text: trimmed }]);
     setQuestion("");
     setLoading(true);
-
-    try {
-      const res = await api.post("/query", { question: trimmed, doc_id: docId });
-      setMessages((prev) => [...prev, { role: "assistant", text: res.data.answer }]);
-    } catch (e) {
-      let msg;
-      if (e.response) {
-        const { status, data } = e.response;
-        if (status === 401) msg = "Your session expired. Please log in again.";
-        else if (status === 404) msg = "This document could not be found.";
-        else if (status === 429) msg = data?.detail || "Quota reached. Please wait a moment and try again.";
-        else msg = data?.detail || "Something went wrong answering that. Please try again.";
-      } else if (e.request) {
-        msg = "Cannot reach the server. It may be starting up — please wait a few seconds and try again.";
-      } else {
-        msg = "Unexpected error. Please try again.";
-      }
+ 
+    // Placeholder assistant bubble that gets filled in as chunks arrive.
+    // Its index in `messages` is fixed once we push it below, so every
+    // update just replaces that one entry rather than re-appending.
+    let assistantIndex;
+    setMessages((prev) => {
+      assistantIndex = prev.length;
+      return [...prev, { role: "assistant", text: "" }];
+    });
+ 
+    const updateAssistant = (text, isError = false) => {
+      setMessages((prev) => {
+        const next = [...prev];
+        next[assistantIndex] = { role: "assistant", text, isError };
+        return next;
+      });
+    };
+ 
+    const fail = (msg) => {
       setError(msg);
-      // Also surface the failure inline in the conversation, so it's
-      // clear which question didn't get answered rather than just a
-      // banner disconnected from the message list.
-      setMessages((prev) => [...prev, { role: "assistant", text: msg, isError: true }]);
+      updateAssistant(msg, true);
+    };
+ 
+    try {
+      const token = sessionStorage.getItem("documind_token");
+      const res = await fetch(`${BACKEND}/query/stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ question: trimmed, doc_id: docId }),
+      });
+ 
+      if (!res.ok) {
+        // Auth/rate-limit/network-level failures show up as a normal
+        // HTTP error status here, before any SSE body is sent -- once
+        // streaming starts the server can only report errors as an
+        // "event: error" SSE message instead (handled below).
+        if (res.status === 401) fail("Your session expired. Please log in again.");
+        else if (res.status === 404) fail("This document could not be found.");
+        else if (res.status === 429) fail("Quota reached. Please wait a moment and try again.");
+        else fail("Something went wrong answering that. Please try again.");
+        return;
+      }
+ 
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let text = "";
+ 
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+ 
+        // SSE events are separated by a blank line; a partial event may
+        // sit at the end of `buffer` until the next chunk completes it.
+        const events = buffer.split("\n\n");
+        buffer = events.pop();
+ 
+        for (const raw of events) {
+          const eventLine = raw.split("\n").find((l) => l.startsWith("event: "));
+          const dataLine = raw.split("\n").find((l) => l.startsWith("data: "));
+          if (!dataLine) continue;
+          const eventType = eventLine ? eventLine.slice("event: ".length) : "chunk";
+          const data = JSON.parse(dataLine.slice("data: ".length));
+ 
+          if (eventType === "chunk") {
+            text += data.text;
+            updateAssistant(text);
+          } else if (eventType === "error") {
+            fail(data.detail || "Something went wrong answering that. Please try again.");
+            return;
+          }
+          // "done" carries the full answer for convenience but `text`
+          // already matches it token-for-token, so no extra update needed.
+        }
+      }
+    } catch (e) {
+      fail("Cannot reach the server. It may be starting up — please wait a few seconds and try again.");
     } finally {
       setLoading(false);
     }
   };
-
+ 
   const handleKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
   };
-
+ 
   const s = {
     wrap: {
       display: "flex",
@@ -152,7 +211,7 @@ export default function ChatWindow({ docId }) {
       borderRadius: "var(--radius-sm)",
     },
   };
-
+ 
   return (
     <div style={s.wrap}>
       <div style={s.messages}>
@@ -161,14 +220,16 @@ export default function ChatWindow({ docId }) {
             Ask a question about this document to get started.
           </div>
         ) : (
-          messages.map((m, i) => (
-            <div key={i} style={s.row(m.role === "user")}>
-              <div style={s.bubble(m.role === "user", m.isError)}>{m.text}</div>
-            </div>
-          ))
+          messages
+            .filter((m) => !(m.role === "assistant" && m.text === "" && !m.isError))
+            .map((m, i) => (
+              <div key={i} style={s.row(m.role === "user")}>
+                <div style={s.bubble(m.role === "user", m.isError)}>{m.text}</div>
+              </div>
+            ))
         )}
-
-        {loading && (
+ 
+        {loading && messages[messages.length - 1]?.text === "" && (
           <div style={s.typingRow}>
             <div style={s.typingBubble}>
               <span style={s.dot} className="pulse-1" />
@@ -177,12 +238,12 @@ export default function ChatWindow({ docId }) {
             </div>
           </div>
         )}
-
+ 
         <div ref={bottomRef} />
       </div>
-
+ 
       {error && <div style={s.errorBanner}>{error}</div>}
-
+ 
       <div style={s.inputBar}>
         <textarea
           style={s.textarea}
