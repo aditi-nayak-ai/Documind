@@ -1,28 +1,22 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { api, setUnauthorizedHandler } from "./api";
- 
+
 const AuthContext = createContext(null);
- 
+
 const TOKEN_KEY = "documind_token";
- 
+
 export function AuthProvider({ children }) {
   const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY));
   const [user, setUser] = useState(null);
-  // Distinguishes "we haven't checked yet" from "checked, not logged in" --
-  // without this, a page refresh with a valid stored token would flash
-  // the login screen for a moment before /auth/me resolves.
   const [checkingSession, setCheckingSession] = useState(true);
- 
+
   useEffect(() => {
-    // If the api.js interceptor ever sees a 401 (expired/invalid/forged
-    // token — see that file's comment), this is what actually clears the
-    // logged-in UI state to match the token already being gone.
     setUnauthorizedHandler(() => {
       setToken(null);
       setUser(null);
     });
   }, []);
- 
+
   useEffect(() => {
     if (!token) {
       setUser(null);
@@ -38,44 +32,28 @@ export function AuthProvider({ children }) {
       })
       .finally(() => setCheckingSession(false));
   }, [token]);
- 
+
   const login = async (email, password) => {
     const res = await api.post("/auth/login", { email, password });
     sessionStorage.setItem(TOKEN_KEY, res.data.access_token);
     setToken(res.data.access_token);
   };
- 
+
   const register = async (email, password) => {
-    // Deliberately does NOT log the user in. Signing up used to store the
-    // returned access_token immediately, so a new account skipped straight
-    // to the upload screen -- the person never confirmed they can actually
-    // log in with the credentials they just typed. Now register() only
-    // creates the account; AuthPage.jsx switches to the login tab
-    // afterward and the person has to log in explicitly.
     await api.post("/auth/register", { email, password });
   };
- 
+
   const logout = async () => {
-    // Best-effort server-side revocation: this bumps the user's
-    // token_version (see backend app/database.py increment_token_version),
-    // which immediately invalidates this token -- and every other
-    // outstanding token for this user -- rather than leaving it valid
-    // for the rest of its 7-day life with no way to kill it. If the
-    // request fails (offline, server down), we still clear local state
-    // below so the user isn't stuck unable to log out from this device;
-    // the token itself would remain valid server-side until it expires
-    // in that case, same as before this change.
     try {
       await api.post("/auth/logout");
     } catch {
-      // Swallow: logging out locally must succeed even if the network
-      // call didn't. See comment above.
+      // Swallow: logging out locally must succeed even if the network call didn't.
     }
     sessionStorage.removeItem(TOKEN_KEY);
     setToken(null);
     setUser(null);
   };
- 
+
   return (
     <AuthContext.Provider
       value={{ token, user, isAuthenticated: !!token, checkingSession, login, register, logout }}
@@ -83,4 +61,10 @@ export function AuthProvider({ children }) {
       {children}
     </AuthContext.Provider>
   );
+}
+
+export function useAuth() {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error("useAuth must be used within an AuthProvider");
+  return ctx;
 }
