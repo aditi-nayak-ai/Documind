@@ -1,3 +1,5 @@
+
+import json
 import time
 import traceback
 import uuid
@@ -5,7 +7,7 @@ from contextlib import asynccontextmanager
  
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, EmailStr, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -350,6 +352,58 @@ def query(request: Request, body: QueryRequest, current_user=Depends(get_current
     metrics.record_duration("query_ms", round((time.monotonic() - query_start) * 1000, 1))
     increment_user_usage(current_user["id"], "queries")
     return {"answer": answer}
+ 
+ 
+@app.post("/query/stream")
+@limiter.limit("15/minute")
+def query_stream(request: Request, body: QueryRequest, current_user=Depends(get_current_user)):  # noqa: B008
+    """Same as /query, but streams the answer as Server-Sent Events
+    instead of waiting for the full response.
+ 
+    Once the first byte of a streaming HTTP response has gone out, the
+    status code is locked at 200 -- there's no way to switch it to 429
+    or 500 after the fact. So unlike /query, an error here (quota hit,
+    Gemini overloaded, anything unexpected) is reported as a normal SSE
+    "event: error" message inside a 200 response instead of an HTTP
+    error status. The frontend has to check for that event type rather
+    than relying on the HTTP status alone.
+    """
+    if not chat.get_document_info(body.doc_id, current_user["id"]):
+        raise HTTPException(status_code=404, detail="Document not found.")
+ 
+    def event_stream():
+        query_start = time.monotonic()
+        full_answer = []
+        try:
+            for piece in chat.ask_stream(body.question, body.doc_id):
+                full_answer.append(piece)
+                yield f"event: chunk\ndata: {json.dumps({'text': piece})}\n\n"
+        except QuotaError as e:
+            metrics.increment("queries_failed_total")
+            metrics.increment("quota_errors_total")
+            wait_note = "Please wait a minute and try again." if not e.is_daily else "Quota resets daily — please try again later."
+            yield f"event: error\ndata: {json.dumps({'detail': f'Gemini API quota reached. {wait_note}'})}\n\n"
+            return
+        except TransientServerError:
+            metrics.increment("queries_failed_total")
+            yield f"event: error\ndata: {json.dumps({'detail': 'Gemini servers are temporarily overloaded. Please try again shortly.'})}\n\n"
+            return
+        except Exception as e:  # noqa: BLE001 -- same rationale as /query above
+            metrics.increment("queries_failed_total")
+            logger.error("Unexpected error in /query/stream", extra={"error": str(e), "traceback": traceback.format_exc()})
+            yield f"event: error\ndata: {json.dumps({'detail': 'Failed to answer the question.'})}\n\n"
+            return
+ 
+        metrics.increment("queries_total")
+        metrics.record_duration("query_ms", round((time.monotonic() - query_start) * 1000, 1))
+        increment_user_usage(current_user["id"], "queries")
+        yield f"event: done\ndata: {json.dumps({'answer': ''.join(full_answer)})}\n\n"
+ 
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
  
  
 @app.get("/document/{doc_id}")
