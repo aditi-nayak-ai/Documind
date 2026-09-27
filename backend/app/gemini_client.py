@@ -1,15 +1,15 @@
 import time
-
+ 
 from google import genai
-
+ 
 from app.config import settings
 from app.exceptions import QuotaError, RetryableGeminiError, TransientServerError
 from app.logging_config import setup_logging
-
+ 
 _client = None
 logger = setup_logging("documind")
-
-
+ 
+ 
 def get_client():
     global _client
     if _client is None:
@@ -18,8 +18,8 @@ def get_client():
             http_options={"api_version": "v1"},
         )
     return _client
-
-
+ 
+ 
 def classify_gemini_error(e) -> RetryableGeminiError:
     """Turns a raw Gemini ClientError/ServerError into either a QuotaError
     (429, your account's usage limits) or a TransientServerError (503,
@@ -34,7 +34,7 @@ def classify_gemini_error(e) -> RetryableGeminiError:
     if "503" in raw or "UNAVAILABLE" in raw:
         logger.warning("Gemini transient server error", extra={"raw_error": raw})
         return TransientServerError(raw=raw)
-
+ 
     logger.warning("Gemini quota error", extra={"raw_error": raw})
     # Best-guess heuristic until you've seen a real 429 payload logged
     # from Render. Common Gemini per-minute errors mention "PerMinute" or
@@ -44,14 +44,14 @@ def classify_gemini_error(e) -> RetryableGeminiError:
     lowered = raw.lower()
     is_daily = not any(tok in lowered for tok in ["perminute", "rpm", "per minute"])
     return QuotaError(raw=raw, is_daily=is_daily)
-
-
+ 
+ 
 # Kept as an alias -- classify_quota_error was the original, narrower name
 # before TransientServerError (503) was added alongside QuotaError (429).
 # Existing imports/tests referencing this name keep working unchanged.
 classify_quota_error = classify_gemini_error
-
-
+ 
+ 
 def call_with_retry(fn, max_attempts: int = 3):
     """Retries any RetryableGeminiError (a per-minute QuotaError, or a
     TransientServerError) with exponential backoff (1s, 2s, 4s); a daily
