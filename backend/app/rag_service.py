@@ -323,7 +323,7 @@ class RagService:
  
     def ask(self, question: str, doc_id: str) -> str:
         query_embedding = self._embed(question)
-        relevant_chunks = search_chunks(query_embedding, doc_id, top_k=3)
+        relevant_chunks = search_chunks(query_embedding, doc_id, top_k=5)
         if not relevant_chunks:
             return "No relevant content found for this document."
         context = "\n\n".join(relevant_chunks)
@@ -334,6 +334,27 @@ class RagService:
             "Question: " + question + "\n\nAnswer:"
         )
         return self._generate(prompt)
+ 
+    def ask_stream(self, question: str, doc_id: str):
+        """Same retrieval as ask(), but yields the answer as it's
+        generated instead of returning it all at once. Embedding the
+        question and searching pgvector both happen up front, same as
+        ask() -- those are fast and local-ish; only the actual answer
+        generation (the slow, Gemini-network-bound part) is streamed.
+        """
+        query_embedding = self._embed(question)
+        relevant_chunks = search_chunks(query_embedding, doc_id, top_k=5)
+        if not relevant_chunks:
+            yield "No relevant content found for this document."
+            return
+        context = "\n\n".join(relevant_chunks)
+        prompt = (
+            "You are a helpful assistant. Answer the question based only on the context below.\n"
+            "Be specific and concise.\n\n"
+            "Context:\n" + context + "\n\n"
+            "Question: " + question + "\n\nAnswer:"
+        )
+        yield from llm.generate_stream(prompt)
  
     def get_document_info(self, doc_id: str, user_id: int) -> dict:
         return get_document(doc_id, user_id)
