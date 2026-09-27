@@ -1,82 +1,92 @@
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import { api, setUnauthorizedHandler } from "./api";
- 
-const TOKEN_KEY = "documind_token";
  
 const AuthContext = createContext(null);
  
+const TOKEN_KEY = "documind_token";
+ 
 export function AuthProvider({ children }) {
+  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY));
   const [user, setUser] = useState(null);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  // Distinguishes "we haven't checked yet" from "checked, not logged in" --
+  // without this, a page refresh with a valid stored token would flash
+  // the login screen for a moment before /auth/me resolves.
   const [checkingSession, setCheckingSession] = useState(true);
  
-  const clearSession = useCallback(() => {
-    localStorage.removeItem(TOKEN_KEY);
-    setUser(null);
-    setIsAuthenticated(false);
+  useEffect(() => {
+    // If the api.js interceptor ever sees a 401 (expired/invalid/forged
+    // token — see that file's comment), this is what actually clears the
+    // logged-in UI state to match the token already being gone.
+    setUnauthorizedHandler(() => {
+      setToken(null);
+      setUser(null);
+    });
   }, []);
  
-  // api.js guarantees a 401 always means "the token is missing, expired,
-  // or revoked" -- never anything else (see backend app/auth.py). So the
-  // only correct reaction, from anywhere in the app, is dropping the
-  // session and falling back to the login screen.
   useEffect(() => {
-    setUnauthorizedHandler(clearSession);
-  }, [clearSession]);
- 
-  // On first load, a token may already be sitting in localStorage from a
-  // previous visit. Validate it against the server before trusting it --
-  // otherwise a stale/expired token would flash the authenticated UI and
-  // then immediately bounce the user back to login on the first request.
-  useEffect(() => {
-    const token = localStorage.getItem(TOKEN_KEY);
     if (!token) {
+      setUser(null);
       setCheckingSession(false);
       return;
     }
     api
       .get("/auth/me")
-      .then((res) => {
-        setUser(res.data);
-        setIsAuthenticated(true);
-      })
+      .then((res) => setUser(res.data))
       .catch(() => {
-        clearSession();
+        setToken(null);
+        setUser(null);
       })
       .finally(() => setCheckingSession(false));
-  }, [clearSession]);
+  }, [token]);
  
-  const login = useCallback(async (email, password) => {
+  const login = async (email, password) => {
     const res = await api.post("/auth/login", { email, password });
     localStorage.setItem(TOKEN_KEY, res.data.access_token);
-    setUser({ email });
-    setIsAuthenticated(true);
-  }, []);
+    setToken(res.data.access_token);
+  };
  
-  // Deliberately does NOT store the returned token or authenticate the
-  // user. Registering used to store whatever access_token the backend
-  // returned and jump straight to the upload screen, skipping login
-  // entirely -- see AuthPage.test.jsx for the regression this guards.
-  const register = useCallback(async (email, password) => {
+  const register = async (email, password) => {
+    // Deliberately does NOT log the user in. Signing up used to store the
+    // returned access_token immediately, so a new account skipped straight
+    // to the upload screen -- the person never confirmed they can actually
+    // log in with the credentials they just typed. Now register() only
+    // creates the account; AuthPage.jsx switches to the login tab
+    // afterward and the person has to log in explicitly.
     await api.post("/auth/register", { email, password });
-  }, []);
+  };
  
-  const logout = useCallback(() => {
-    // Best-effort server-side revocation (bumps token_version); the
-    // session is cleared locally either way.
-    api.post("/auth/logout").catch(() => {});
-    clearSession();
-  }, [clearSession]);
+  const logout = async () => {
+    // Best-effort server-side revocation: this bumps the user's
+    // token_version (see backend app/database.py increment_token_version),
+    // which immediately invalidates this token -- and every other
+    // outstanding token for this user -- rather than leaving it valid
+    // for the rest of its 7-day life with no way to kill it. If the
+    // request fails (offline, server down), we still clear local state
+    // below so the user isn't stuck unable to log out from this device;
+    // the token itself would remain valid server-side until it expires
+    // in that case, same as before this change.
+    try {
+      await api.post("/auth/logout");
+    } catch {
+      // Swallow: logging out locally must succeed even if the network
+      // call didn't. See comment above.
+    }
+    localStorage.removeItem(TOKEN_KEY);
+    setToken(null);
+    setUser(null);
+  };
  
-  const value = { user, isAuthenticated, checkingSession, login, register, logout };
- 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider
+      value={{ token, user, isAuthenticated: !!token, checkingSession, login, register, logout }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
 }
  
 export function useAuth() {
   const ctx = useContext(AuthContext);
-  if (!ctx) {
-    throw new Error("useAuth must be used within an AuthProvider");
-  }
+  if (!ctx) throw new Error("useAuth must be used within an AuthProvider");
   return ctx;
 }
