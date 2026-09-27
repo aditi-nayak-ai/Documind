@@ -30,9 +30,20 @@ function renderAuthPage() {
 beforeEach(() => {
   localStorage.clear();
   vi.clearAllMocks();
+  // AuthContext fetches /auth/me in a useEffect whenever `token` becomes
+  // truthy (i.e. right after a successful login). Give it a default
+  // resolved value so that effect doesn't reject with "Cannot read
+  // properties of undefined" the moment any test actually logs in.
+  api.get.mockResolvedValue({ data: { id: 1, email: "new@example.com" } });
 });
  
 afterEach(() => {
+  // Without this, jsdom's `document` persists across tests within this
+  // file (Vitest doesn't auto-unmount), so the second test's render adds
+  // its DOM on top of the first test's instead of replacing it -- e.g.
+  // two "Sign up" tabs exist by the time a later test queries for one,
+  // and getByText throws "multiple elements found" for a reason that has
+  // nothing to do with the component under test.
   cleanup();
 });
  
