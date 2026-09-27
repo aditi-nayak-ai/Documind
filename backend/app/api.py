@@ -96,7 +96,17 @@ ALLOWED_ORIGINS = [o.strip() for o in settings.allowed_origins.split(",") if o.s
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    # DELETE must be listed explicitly: CORS allow_methods is an allowlist,
+    # not "anything the routes define." Without DELETE here, a browser's
+    # preflight (OPTIONS) check for DELETE /document/{doc_id} fails and the
+    # browser blocks the real request before it's even sent -- the backend
+    # never sees it, and the frontend's axios call rejects with no
+    # `response` object at all (a CORS block is opaque to JS), which is
+    # exactly why the UI showed a generic "Could not delete the document"
+    # fallback instead of a real error. FastAPI's TestClient calls the
+    # ASGI app in-process and never enforces CORS, which is why every
+    # backend test suite run passed while this was broken in the browser.
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
 )
 chat = ChatEngine()
