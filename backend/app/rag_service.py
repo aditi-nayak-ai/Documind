@@ -246,12 +246,28 @@ class RagService:
  
         full_text = pdf_extraction.extract_text(contents)
  
-        doc_id = str(uuid.uuid4())
         chunks = self._chunk_text(full_text)
  
+        # RESUME: same file (same content hash) => same chunks in the same
+        # order, so a partial upload continues from where it stopped instead
+        # of re-embedding chunks 0..N again (which hit the same wall every
+        # time and never got past the first ~100 chunks).
+        resume_from = 0
+        if stale_partial and 0 < stale_partial.get("chunk_count", 0) < len(chunks):
+            doc_id = stale_partial["doc_id"]
+            resume_from = stale_partial["chunk_count"]
+            stale_partial = None  # being continued, not superseded
+        else:
+            doc_id = str(uuid.uuid4())
+ 
         try:
-            result = self._ingest_new(doc_id, filename, content_hash, full_text, chunks, user_id)
+            result = self._ingest_new(doc_id, filename, content_hash, full_text, chunks, user_id,
+                                      resume_from=resume_from)
         except Exception:
+            if resume_from:
+                # Never delete chunks of a document being resumed: they are
+                # valid, already-embedded work.
+                raise
             # Any failure that is not the deliberate "partial" outcome
             # handled inside _ingest_new: remove whatever chunks were
             # already written so they don't sit orphaned with no documents
@@ -273,16 +289,16 @@ class RagService:
         return result
  
     def _ingest_new(self, doc_id: str, filename: str, content_hash: str, full_text: str,
-                    chunks: list, user_id: int | None) -> dict:
-        embedded_count = 0
+                    chunks: list, user_id: int | None, resume_from: int = 0) -> dict:
+        embedded_count = resume_from
         try:
-            for batch_start in range(0, len(chunks), embeddings.EMBED_BATCH_SIZE):
+            for batch_start in range(resume_from, len(chunks), embeddings.EMBED_BATCH_SIZE):
                 batch = chunks[batch_start:batch_start + embeddings.EMBED_BATCH_SIZE]
                 batch_embeddings = self._embed_batch(batch)
                 insert_chunks(batch, batch_embeddings, doc_id)
                 embedded_count += len(batch)
         except RetryableGeminiError:
-            if embedded_count == 0:
+            if embedded_count == 0 and resume_from == 0:
                 raise
             summary = (
                 f"Document partially indexed ({embedded_count}/{len(chunks)} chunks) — "
