@@ -116,7 +116,7 @@ pytest   # requires a Postgres instance with pgvector — see tests/conftest.py
 DATABASE_URL=postgresql://...
 GEMINI_API_KEY=...
 JWT_SECRET_KEY=... # generate with: python -c "import secrets; print(secrets.token_hex(32))"
-ALLOWED_ORIGINS=https://your-frontend.vercel.app
+ALLOWED_ORIGINS=https://documind-murex.vercel.app/
 
 
 **Frontend** — set in Vercel's dashboard or a local `.env.local` file:
