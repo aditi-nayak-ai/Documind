@@ -247,7 +247,7 @@ class RagService:
         full_text = pdf_extraction.extract_text(contents)
  
         chunks = self._chunk_text(full_text)
- 
+
         # RESUME: same file (same content hash) => same chunks in the same
         # order, so a partial upload continues from where it stopped instead
         # of re-embedding chunks 0..N again (which hit the same wall every
@@ -259,7 +259,7 @@ class RagService:
             stale_partial = None  # being continued, not superseded
         else:
             doc_id = str(uuid.uuid4())
- 
+
         try:
             result = self._ingest_new(doc_id, filename, content_hash, full_text, chunks, user_id,
                                       resume_from=resume_from)
@@ -288,6 +288,16 @@ class RagService:
                                  extra={"doc_id": stale_partial["doc_id"]})
         return result
  
+    @staticmethod
+    def _partial_text(embedded_count: int, total: int) -> tuple[str, list]:
+        summary = (
+            f"Document partially indexed ({embedded_count}/{total} chunks) — "
+            "Gemini was temporarily unavailable mid-upload. Chat will only search "
+            "the indexed portion until you re-upload."
+        )
+        facts = [f"{_FACTS_FAILURE_PREFIX} — indexing was interrupted before the whole document was processed."]
+        return summary, facts
+
     def _ingest_new(self, doc_id: str, filename: str, content_hash: str, full_text: str,
                     chunks: list, user_id: int | None, resume_from: int = 0) -> dict:
         embedded_count = resume_from
@@ -297,15 +307,20 @@ class RagService:
                 batch_embeddings = self._embed_batch(batch)
                 insert_chunks(batch, batch_embeddings, doc_id)
                 embedded_count += len(batch)
-        except RetryableGeminiError:
+        except Exception as exc:
+            if not isinstance(exc, RetryableGeminiError):
+                # A resumed run may already have stored new chunks before it
+                # died. Record that progress so the documents row matches the
+                # chunk rows; otherwise the next resume would start from a
+                # stale count and insert duplicates.
+                if resume_from and embedded_count > resume_from:
+                    msg, facts = self._partial_text(embedded_count, len(chunks))
+                    save_document(doc_id, filename, content_hash, msg, json.dumps(facts),
+                                  chunk_count=embedded_count, is_partial=True, user_id=user_id)
+                raise
             if embedded_count == 0 and resume_from == 0:
                 raise
-            summary = (
-                f"Document partially indexed ({embedded_count}/{len(chunks)} chunks) — "
-                "Gemini was temporarily unavailable mid-upload. Chat will only search "
-                "the indexed portion until you re-upload."
-            )
-            facts = [f"{_FACTS_FAILURE_PREFIX} — indexing was interrupted before the whole document was processed."]
+            summary, facts = self._partial_text(embedded_count, len(chunks))
             save_document(doc_id, filename, content_hash, summary, json.dumps(facts),
                           chunk_count=embedded_count, is_partial=True, user_id=user_id)
             return {
