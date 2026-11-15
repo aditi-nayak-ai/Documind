@@ -1,3 +1,5 @@
+
+import re
 import time
  
 from google import genai
@@ -52,6 +54,21 @@ def classify_gemini_error(e) -> RetryableGeminiError:
 classify_quota_error = classify_gemini_error
  
  
+# Free-tier per-minute quotas (e.g. 100 embed requests/min) reset on a ~60s
+# window, and Gemini says exactly how long to wait ("retryDelay': '46s'").
+# A 1s/2s backoff is far shorter than that, so every retry hit the same
+# 429 and the upload gave up as "partial". Honor the server's delay instead.
+_MAX_RETRY_WAIT = 65
+ 
+ 
+def _retry_wait_seconds(e, attempt: int) -> float:
+    raw = getattr(e, "raw", "") or ""
+    m = re.search(r"retryDelay'?\"?:\s*'?\"?(\d+(?:\.\d+)?)s", raw)
+    if m:
+        return min(float(m.group(1)) + 1, _MAX_RETRY_WAIT)
+    return 2 ** attempt
+ 
+ 
 def call_with_retry(fn, max_attempts: int = 3):
     """Retries any RetryableGeminiError (a per-minute QuotaError, or a
     TransientServerError) with exponential backoff (1s, 2s, 4s); a daily
@@ -66,4 +83,4 @@ def call_with_retry(fn, max_attempts: int = 3):
         except RetryableGeminiError as e:
             if e.is_daily or attempt == max_attempts - 1:
                 raise
-            time.sleep(2 ** attempt)
+            time.sleep(_retry_wait_seconds(e, attempt))
