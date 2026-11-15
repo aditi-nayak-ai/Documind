@@ -69,6 +69,20 @@ def _ocr_page(pdf_bytes: bytes, page_index: int) -> str:
         return ""
 
 
+def sanitize_text(text: str) -> str:
+    """Make extracted text safe to send over the wire as UTF-8.
+
+    PDF text extraction can emit LONE UTF-16 surrogates (e.g. half of an
+    emoji such as U+D83E). Python strs can hold them, but encoding to UTF-8
+    fails ("surrogates not allowed"), which crashed the embedding request
+    for the chunk containing it and rolled back the whole upload. A valid
+    surrogate PAIR is re-joined into the real character; a lone half is
+    dropped. Null bytes are removed too (PostgreSQL text rejects them).
+    """
+    text = text.encode("utf-16", "surrogatepass").decode("utf-16", "ignore")
+    return text.replace("\x00", "")
+
+
 def extract_text(contents: bytes) -> str:
     """Extract all readable text from a PDF's raw bytes.
 
@@ -95,7 +109,7 @@ def extract_text(contents: bytes) -> str:
             text = (text + "\n\n" + table_text) if text.strip() else table_text
         page_texts.append(text)
 
-    full_text = "".join(page_texts)
+    full_text = sanitize_text("".join(page_texts))
 
     if len(full_text.strip()) < MIN_EXTRACTED_CHARS:
         raise ExtractionError(
