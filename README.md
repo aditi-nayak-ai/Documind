@@ -121,7 +121,7 @@ ALLOWED_ORIGINS=https://documind-murex.vercel.app/
 
 **Frontend** — set in Vercel's dashboard or a local `.env.local` file:
 
-VITE_BACKEND_URL=https://your-render-service.onrender.com
+VITE_BACKEND_URL= https://documind-ctcn.onrender.com/
 
 
 ## API endpoints
