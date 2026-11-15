@@ -1,4 +1,3 @@
-
 """Step 2 tests: an ingest either fully succeeds, is deliberately kept as a
 "partial" document, or leaves NOTHING behind. Also covers owner-scoped
 deletion. Only the Gemini calls are faked; chunking, batching and every
