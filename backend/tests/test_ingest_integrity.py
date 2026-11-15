@@ -1,3 +1,4 @@
+
 """Step 2 tests: an ingest either fully succeeds, is deliberately kept as a
 "partial" document, or leaves NOTHING behind. Also covers owner-scoped
 deletion. Only the Gemini calls are faked; chunking, batching and every
@@ -117,24 +118,31 @@ def test_quota_error_midway_keeps_a_partial_document(engine, monkeypatch, test_u
     assert stored["is_partial"] is True
  
  
-def test_reupload_replaces_the_old_partial_document(engine, monkeypatch, test_user):
+def test_reupload_resumes_the_partial_document(engine, monkeypatch, test_user):
     monkeypatch.setattr(engine, "_embed_batch", _fail_after_first_batch(QuotaError("quota", is_daily=True)))
     partial = engine.load_pdf(b"file-a", "a.pdf", user_id=test_user["id"])
     old_id = partial["doc_id"]
  
-    # Quota is back: same file, working embeddings.
-    monkeypatch.setattr(engine, "_embed_batch", lambda texts: [GOOD_VECTOR for _ in texts])
+    # Quota is back: same file, working embeddings. Only the missing chunks
+    # may be embedded; the 20 already stored must not be redone.
+    embedded = []
+ 
+    def counting_embed(texts):
+        embedded.extend(texts)
+        return [GOOD_VECTOR for _ in texts]
+ 
+    monkeypatch.setattr(engine, "_embed_batch", counting_embed)
     full = engine.load_pdf(b"file-a", "a.pdf", user_id=test_user["id"])
  
-    assert full["doc_id"] != old_id
+    assert full["doc_id"] == old_id            # continued, not replaced
     assert not full.get("partial")
-    assert database.get_document(old_id, test_user["id"]) is None
-    assert _count_chunks(old_id) == 0
-    assert _count_chunks(full["doc_id"]) == full["chunks"]
+    assert len(embedded) == full["chunks"] - partial["chunks"]
+    assert _count_chunks(old_id) == full["chunks"]   # no duplicates
     assert _count_documents() == 1
+    assert database.get_document(old_id, test_user["id"])["is_partial"] is False
  
  
-def test_failed_retry_keeps_the_old_partial_document(engine, monkeypatch, test_user):
+def test_failed_resume_keeps_partial_consistent(engine, monkeypatch, test_user):
     monkeypatch.setattr(engine, "_embed_batch", _fail_after_first_batch(QuotaError("quota", is_daily=True)))
     partial = engine.load_pdf(b"file-a", "a.pdf", user_id=test_user["id"])
  
@@ -142,9 +150,13 @@ def test_failed_retry_keeps_the_old_partial_document(engine, monkeypatch, test_u
     with pytest.raises(RuntimeError):
         engine.load_pdf(b"file-a", "a.pdf", user_id=test_user["id"])
  
-    # The user still has the partial document; the failed retry left nothing extra.
-    assert database.get_document(partial["doc_id"], test_user["id"]) is not None
-    assert _count_chunks() == partial["chunks"]
+    # The partial document survives, and its recorded chunk_count matches the
+    # chunk rows actually stored (so a later resume cannot duplicate chunks).
+    stored = database.get_document(partial["doc_id"], test_user["id"])
+    assert stored is not None
+    assert stored["is_partial"] is True
+    assert _count_chunks(partial["doc_id"]) == stored["chunk_count"]
+    assert stored["chunk_count"] > partial["chunks"]
  
  
 # ---- delete_document -------------------------------------------------------
