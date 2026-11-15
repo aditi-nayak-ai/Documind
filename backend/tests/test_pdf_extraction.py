@@ -147,3 +147,15 @@ def test_ocr_not_used_when_page_already_has_enough_text(monkeypatch):
 
     pdf_extraction.extract_text(buf.getvalue())
     assert calls == []
+
+
+def test_sanitize_text_drops_lone_surrogates_and_keeps_real_emoji():
+    from app.pdf_extraction import sanitize_text
+
+    lone = "AI \ud83e is fun"                    # half an emoji, as pypdf can emit
+    pair = "ok \ud83e\udd16 done"                # a proper surrogate pair (robot emoji)
+    assert sanitize_text(lone) == "AI  is fun"
+    assert sanitize_text(pair) == "ok \U0001f916 done"
+    assert sanitize_text("a\x00b") == "ab"
+    sanitize_text(lone).encode("utf-8")           # must not raise
+    sanitize_text(pair).encode("utf-8")
